@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20, 22, 24]
+        node-version: [18, 20, 22, 24]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,7 +34,10 @@ jobs:
         run: |
           bash -n install.sh
           bash -n backup_vnstat.sh
+          bash -n test/install-linux.test.sh
+      - name: Test Linux installer safeguards
+        run: bash test/install-linux.test.sh
       - name: Test
         run: npm run test:ci
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --audit-level=high

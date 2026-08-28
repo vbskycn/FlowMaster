@@ -1,11 +1,11 @@
 {
   "name": "flowmaster",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "description": "专业的网络流量实时监控系统",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node --watch server.js",
     "check": "node --check server.js && node scripts/check-inline-js.js",
     "test": "node --test --test-reporter=spec",
     "test:ci": "npm run check && npm test"
@@ -23,14 +23,11 @@
     "axios": "1.20.0",
     "bootstrap": "5.3.8",
     "bootstrap-icons": "1.13.1",
-    "chart.js": "4.5.0",
+    "chart.js": "4.5.1",
     "cors": "2.8.6",
     "dotenv": "17.4.2",
-    "express": "4.22.2",
-    "vue": "3.5.20"
-  },
-  "devDependencies": {
-    "nodemon": "3.1.14"
+    "express": "5.2.1",
+    "vue": "3.5.42"
   },
   "repository": {
     "type": "git",

@@ -1088,20 +1088,20 @@
                     let speedInBits = speed;
                     switch((fromUnit||'').toLowerCase()) {
                         case 'gb/秒':
-                            speedInBits = speed * 1024 * 1024 * 1024;
+                            speedInBits = speed * 1000 * 1000 * 1000;
                             break;
                         case 'mb/秒':
-                            speedInBits = speed * 1024 * 1024;
+                            speedInBits = speed * 1000 * 1000;
                             break;
                         case 'kb/秒':
-                            speedInBits = speed * 1024;
+                            speedInBits = speed * 1000;
                             break;
                         case 'b/秒':
                         default:
                             speedInBits = speed;
                     }
                     // 再转为Mb/秒
-                    return speedInBits / (1024 * 1024);
+                    return speedInBits / (1000 * 1000);
                 },
                 // 新增：获取缓存统计信息
                 async loadCacheStats() {
@@ -1171,9 +1171,12 @@
                 async testVnstat() {
                     try {
                         const response = await this.apiGet('/api/test/vnstat');
+                        const results = Object.values(response.data.results || {});
+                        const success = results.length > 0 && results.every(result => result.success === true);
                         return {
-                            success: true,
-                            data: response.data
+                            success,
+                            data: response.data,
+                            error: success ? null : '一个或多个 vnstat 检查失败'
                         };
                     } catch (error) {
                         return {

@@ -1,9 +1,9 @@
 # FlowMaster - 专业的网络流量实时监控系统
 
-[![Version](https://img.shields.io/badge/version-1.1.17-blue.svg)](https://github.com/vbskycn/FlowMaster)
+[![Version](https://img.shields.io/badge/version-1.1.18-blue.svg)](https://github.com/vbskycn/FlowMaster)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
-[![Vue.js](https://img.shields.io/badge/vue.js-3.5.20-green.svg)](https://vuejs.org/)
+[![Vue.js](https://img.shields.io/badge/vue.js-3.5.42-green.svg)](https://vuejs.org/)
 
 ![FlowMaster](assets/FlowMaster.jpg)
 
@@ -86,19 +86,19 @@ FlowMaster 是一个基于 **vnstat** 的专业网络流量监控系统，采用
 | 组件 | 技术 | 版本 | 说明 |
 |------|------|------|------|
 | **运行时** | Node.js | 18.0.0+ | JavaScript运行时环境 |
-| **Web框架** | Express.js | 4.18.2+ | 轻量级Web应用框架 |
-| **跨域处理** | CORS | 2.8.5+ | 跨域资源共享 |
-| **进程管理** | PM2 | 最新 | 生产环境进程管理器 |
+| **Web框架** | Express.js | 5.2.1 | 轻量级Web应用框架 |
+| **跨域处理** | CORS | 2.8.6 | 跨域资源共享 |
+| **进程管理** | systemd | 系统自带 | 服务守护、日志和开机启动 |
 | **监控工具** | vnstat | 2.0.0+ | 网络流量监控工具 |
 
 ### 前端技术栈
 | 组件 | 技术 | 版本 | 说明 |
 |------|------|------|------|
-| **框架** | Vue.js | 3.5.20 | 渐进式JavaScript框架，本地加载 |
+| **框架** | Vue.js | 3.5.42 | 渐进式JavaScript框架，本地加载 |
 | **UI框架** | Bootstrap | 5.3.8 | 响应式CSS框架，本地加载 |
-| **图表库** | Chart.js | 4.5.0 | 交互式图表库，本地加载 |
+| **图表库** | Chart.js | 4.5.1 | 交互式图表库，本地加载 |
 | **HTTP客户端** | Axios | 1.20.0 | Promise-based HTTP客户端，本地加载 |
-| **图标库** | Bootstrap Icons | 1.8.0+ | 图标字体库 |
+| **图标库** | Bootstrap Icons | 1.13.1 | 图标字体库，本地加载 |
 
 ### 系统架构
 ```
@@ -195,34 +195,17 @@ MEMORY_MONITOR_INTERVAL=300000      # 内存监控间隔(ms)
 CORS_ORIGINS=                       # 逗号分隔的跨域来源，留空表示不开放跨域
 ADMIN_TOKEN=                        # 可选；保护缓存清理和vnstat诊断接口
 RATE_LIMIT_MAX=180                  # 每个客户端每分钟API请求上限
+RATE_LIMIT_MAX_CLIENTS=10000        # 限流客户端桶数量上限
 TRUST_PROXY=false                   # 仅在可信反向代理后启用
 ```
 
-### PM2 配置
+### systemd 服务
 
-仓库已经提供 `ecosystem.config.js`，默认启用自动重启、内存上限和优雅关闭：
+一键安装会创建并启用 `flowmaster.service`。服务异常退出时自动重启，日志统一进入 systemd journal：
 
-```javascript
-module.exports = {
-  apps: [{
-    name: "flowmaster",
-    script: "server.js",
-    instances: 1,
-    autorestart: true,
-    watch: false,
-    max_memory_restart: "512M",
-    env: {
-      NODE_ENV: "production",
-      HOST: "0.0.0.0",
-      PORT: 10089,
-      CACHE_MAX_SIZE: 100,
-      CACHE_MAX_MEMORY_MB: 50
-    },
-    env_production: {
-      NODE_ENV: "production"
-    }
-  }]
-};
+```bash
+systemctl status flowmaster.service --no-pager
+journalctl -u flowmaster.service -f
 ```
 
 ### 手动安装步骤
@@ -242,18 +225,14 @@ sudo systemctl enable vnstat
 sudo systemctl start vnstat
 ```
 
-#### 2. 安装Node.js和PM2
+#### 2. 安装 Node.js
 
 ```bash
-# 安装Node.js (推荐使用nvm)
+# 安装 Node.js 18 或更高版本
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
 source ~/.bashrc
 nvm install 18
 nvm use 18
-
-# 安装PM2
-npm install -g pm2
-pm2 startup
 ```
 
 #### 3. 部署应用
@@ -266,43 +245,32 @@ cd FlowMaster
 # 按锁文件安装依赖
 npm ci
 
-# 启动服务
-pm2 start ecosystem.config.js
-pm2 save
-
-# 调试启动
-npm ci
+# 前台调试启动；生产部署请使用一键安装器生成的 systemd 服务
 node server.js
 ```
 
-#### 6. PM2 管理命令
+#### 4. systemd 管理命令
 
 ```bash
 # 查看服务状态
-pm2 status flowmaster
+systemctl status flowmaster.service --no-pager
 
 # 查看服务日志
-pm2 logs flowmaster
+journalctl -u flowmaster.service -f
 
 # 重启服务
-pm2 restart flowmaster
+systemctl restart flowmaster.service
 
 # 停止服务
-pm2 stop flowmaster
+systemctl stop flowmaster.service
 
-# 删除服务
-pm2 delete flowmaster
-
-# 查看详细信息
-pm2 show flowmaster
-
-# 监控服务
-pm2 monit
+# 启动服务
+systemctl start flowmaster.service
 ```
 
 默认访问地址：`http://localhost:10089`
 
-#### 7. 更新脚本
+#### 5. 更新脚本
 
 ##### 一键自动更新
 
@@ -319,7 +287,7 @@ curl -o install.sh https://gh-proxy.com/https://raw.githubusercontent.com/vbskyc
 ```
 
 - 运行后，脚本会识别已有安装；请选择 **1（安全更新/重新部署）**。新版本会先安装依赖并完成冒烟测试，验证通过后才替换现有版本，失败时保留旧服务。
-- 如果你是在/root 目录安装的，也可以直接 `sudo ./install.sh`，然后选择 3更新。
+- 安装器会拒绝在僵尸进程数量异常时继续，并把旧 PM2 中名为 `flowmaster` 的应用有界迁移到 systemd；不会重启或删除其他 PM2 应用。
 
 ##### 手动更新
 
@@ -328,30 +296,18 @@ curl -o install.sh https://gh-proxy.com/https://raw.githubusercontent.com/vbskyc
 ```bash
 cd FlowMaster #进入脚本目录
 git pull #更新仓库
-pm2 restart flowmaster进程 #重启flowmaster进程
+npm ci
+sudo systemctl restart flowmaster.service
 ```
 
 ### 🔧 配置说明
 
-使用 PM2 设置环境变量：
+编辑应用目录中的 `.env` 后重启服务：
 
 ```bash
-# 设置端口
-pm2 start server.js --name flowmaster --env PORT=10089
-
-# 或在 ecosystem.config.js 中配置
-echo 'module.exports = {
-  apps: [{
-    name: "flowmaster",
-    script: "server.js",
-    env: {
-      PORT: 10089
-    }
-  }]
-}' > ecosystem.config.js
-
-# 使用配置文件启动
-pm2 start ecosystem.config.js
+sudo cp .env.example /opt/flowmaster/.env
+sudo editor /opt/flowmaster/.env
+sudo systemctl restart flowmaster.service
 ```
 
 ## 📖 使用说明
@@ -432,7 +388,7 @@ GET /api/version
 **响应示例：**
 ```json
 {
-  "version": "1.1.17"
+  "version": "1.1.18"
 }
 ```
 
@@ -548,8 +504,8 @@ sudo systemctl start vnstat
 netstat -tlnp | grep 10089
 
 # 修改端口
-export PORT=8080
-pm2 restart flowmaster
+sudo editor /opt/flowmaster/.env
+sudo systemctl restart flowmaster.service
 ```
 
 #### 3. 缓存问题
@@ -562,7 +518,7 @@ pm2 restart flowmaster
 curl -X POST http://localhost:10089/api/cache/clear
 
 # 重启服务
-pm2 restart flowmaster
+sudo systemctl restart flowmaster.service
 ```
 
 #### 4. 内存使用过高
@@ -574,7 +530,7 @@ pm2 restart flowmaster
 # 调整缓存配置
 export CACHE_MAX_MEMORY_MB=25
 export CACHE_MAX_SIZE=50
-pm2 restart flowmaster
+sudo systemctl restart flowmaster.service
 ```
 
 ### 日志分析
@@ -582,14 +538,11 @@ pm2 restart flowmaster
 查看详细日志信息：
 
 ```bash
-# 查看PM2日志
-pm2 logs flowmaster
+# 查看最近100行日志
+journalctl -u flowmaster.service -n 100 --no-pager
 
-# 查看实时日志
-pm2 logs flowmaster --lines 100
-
-# 查看错误日志
-pm2 logs flowmaster --err
+# 持续查看实时日志
+journalctl -u flowmaster.service -f
 ```
 
 ### 性能诊断
@@ -717,6 +670,9 @@ npm audit --omit=dev --audit-level=high
 # Linux安装与备份脚本语法
 bash -n install.sh
 bash -n backup_vnstat.sh
+
+# Linux安装器超时、端口占用和进程回收回归
+bash test/install-linux.test.sh
 ```
 
 真实 vnstat 联调仍需在 Linux 主机执行，并验证接口发现、实时采样、周期统计、日期查询和优雅关闭。
@@ -821,7 +777,7 @@ type(scope): description
 - [Bootstrap](https://getbootstrap.com/) - 流行的前端组件库
 - [Chart.js](https://www.chartjs.org/) - 交互式图表库
 - [Express.js](https://expressjs.com/) - 快速、开放、极简的 Node.js Web 应用框架
-- [PM2](https://pm2.keymetrics.io/) - 生产环境进程管理器
+- [systemd](https://systemd.io/) - Linux 服务与日志管理
 
 **感谢使用 FlowMaster！** 
 

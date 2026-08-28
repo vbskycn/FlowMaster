@@ -12,7 +12,7 @@ function parsePositiveInteger(value, fallback) {
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-// 运行配置只从进程环境读取；生产环境由 PM2/systemd 显式注入。
+// 运行配置优先由环境变量或 .env 提供；生产环境由 systemd 托管进程。
 const port = parsePositiveInteger(process.env.PORT, 10089);
 const host = process.env.HOST || '0.0.0.0';
 const commandTimeout = parsePositiveInteger(process.env.VNSTAT_COMMAND_TIMEOUT_MS, 15000);
@@ -36,7 +36,8 @@ class CacheManager {
             hits: 0,
             misses: 0,
             sets: 0,
-            deletes: 0
+            deletes: 0,
+            rejected: 0
         };
         
         // 定期清理过期缓存
@@ -90,6 +91,11 @@ class CacheManager {
             size: this.estimateSize(data)
         };
 
+        if (item.size > this.maxMemoryBytes) {
+            this.stats.rejected++;
+            return false;
+        }
+
         // 更新同名条目前先移除旧值，避免容量和内存估算失真。
         this.cache.delete(key);
         while (
@@ -101,6 +107,7 @@ class CacheManager {
 
         this.cache.set(key, item);
         this.stats.sets++;
+        return true;
     }
 
     // 删除缓存
@@ -125,7 +132,7 @@ class CacheManager {
     // 清理LRU项目
     evictLRU() {
         let oldestKey = null;
-        let oldestTime = Date.now();
+        let oldestTime = Number.POSITIVE_INFINITY;
 
         for (const [key, item] of this.cache.entries()) {
             if (item.lastAccessed < oldestTime) {
@@ -249,6 +256,11 @@ const compiledTranslations = Object.entries(translations).map(([key, value]) => 
 const samplingRegex = /Sampling ([^ ]+) \((\d+) seconds average\)/;
 const packetsSampledRegex = /(\d+) packets sampled in (\d+) seconds/;
 const trafficAverageRegex = /Traffic average for (.+)/;
+const ansiEscapeRegex = /\u001B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
+
+function stripTerminalControlSequences(value) {
+    return String(value || '').replace(ansiEscapeRegex, '').replace(/\r/g, '');
+}
 
 // 周期到单位的映射表
 const periodUnitMap = {
@@ -261,7 +273,7 @@ const periodUnitMap = {
 
 // 翻译函数
 function translateOutput(text) {
-    const lines = text.split('\n');
+    const lines = stripTerminalControlSequences(text).split('\n');
     return lines.map(line => {
         // 特殊处理采样信息
         if (line.includes('Sampling')) {
@@ -373,13 +385,20 @@ function filterStatsByTime(lines, period) {
 
 function normalizeValue(value, targetUnit) {
     if (!value) return value;
-    const match = value.match(/([\d.]+)\s*(MiB|GiB|TiB)?/i);
+    const match = value.match(/([\d.]+)\s*(B|KiB|MiB|GiB|TiB|PiB)?/i);
     if (!match) return value;
 
     let valueInMiB = Number.parseFloat(match[1]);
     const sourceUnit = (match[2] || 'MiB').toUpperCase();
-    if (sourceUnit === 'GIB') valueInMiB *= 1024;
-    if (sourceUnit === 'TIB') valueInMiB *= 1024 * 1024;
+    const sourceFactors = {
+        B: 1 / (1024 * 1024),
+        KIB: 1 / 1024,
+        MIB: 1,
+        GIB: 1024,
+        TIB: 1024 * 1024,
+        PIB: 1024 * 1024 * 1024
+    };
+    valueInMiB *= sourceFactors[sourceUnit] || 1;
 
     if (targetUnit === 'GiB') return `${(valueInMiB / 1024).toFixed(2)} GiB`;
     if (targetUnit === 'TiB') return `${(valueInMiB / (1024 * 1024)).toFixed(2)} TiB`;
@@ -482,12 +501,11 @@ function runVnstatPromise(args, options = {}) {
 // ========== 主动定时采集和缓存vnstat数据 ========== //
 const REALTIME_CACHE_SIZE = 20;
 const REALTIME_INTERVAL = 5000; // 5秒
-const PERIODS = ['5', 'h', 'd', 'm', 'y'];
 
 // 记录采集状态和计时器，避免同一接口的慢命令重叠执行。
 const startedRealtime = new Set();
-const startedPeriod = new Set();
 const collectionTimers = new Set();
+const realtimeInFlight = new Map();
 let collectionsEnabled = false;
 
 function scheduleAfter(task, delay) {
@@ -499,12 +517,11 @@ function scheduleAfter(task, delay) {
     collectionTimers.add(timer);
 }
 
-function scheduleRealtimeCollection(interfaceName) {
-    if (startedRealtime.has(interfaceName)) return;
-    startedRealtime.add(interfaceName);
+function collectRealtimeSample(interfaceName) {
+    const existing = realtimeInFlight.get(interfaceName);
+    if (existing) return existing;
 
-    const collect = async () => {
-        const startedAt = Date.now();
+    const promise = (async () => {
         try {
             const stdout = await runVnstatPromise(['-tr', '5', '-i', interfaceName], { timeout: commandTimeout });
             if (stdout) {
@@ -516,9 +533,31 @@ function scheduleRealtimeCollection(interfaceName) {
                 queue.push(entry);
                 if (queue.length > REALTIME_CACHE_SIZE) queue.shift();
                 cacheManager.set(`realtime:${interfaceName}`, queue, REALTIME_CACHE_SIZE * REALTIME_INTERVAL * 2);
+                return entry;
             }
         } catch (error) {
             console.error(`实时采集接口 ${interfaceName} 失败:`, error.message);
+            throw error;
+        } finally {
+            realtimeInFlight.delete(interfaceName);
+        }
+        return null;
+    })();
+
+    realtimeInFlight.set(interfaceName, promise);
+    return promise;
+}
+
+function scheduleRealtimeCollection(interfaceName) {
+    if (startedRealtime.has(interfaceName)) return;
+    startedRealtime.add(interfaceName);
+
+    const collect = async () => {
+        const startedAt = Date.now();
+        try {
+            await collectRealtimeSample(interfaceName);
+        } catch (_) {
+            // collectRealtimeSample 已记录具体错误；定时器保持运行以便下次自动恢复。
         } finally {
             if (collectionsEnabled) {
                 scheduleAfter(collect, Math.max(0, REALTIME_INTERVAL - (Date.now() - startedAt)));
@@ -526,50 +565,12 @@ function scheduleRealtimeCollection(interfaceName) {
         }
     };
 
-    void collect();
+    scheduleAfter(collect, REALTIME_INTERVAL);
 }
 
-function schedulePeriodCollection(interfaceName, period) {
-    const key = `${interfaceName}:${period}`;
-    if (startedPeriod.has(key)) return;
-    startedPeriod.add(key);
-
-    const collect = async () => {
-        const refreshInterval = getCacheTimeForPeriod(period);
-        try {
-            const args = period === '5' ? ['-5', '-i', interfaceName] : [`-${period}`, '-i', interfaceName];
-            const stdout = await runVnstatPromise(args);
-            if (stdout) {
-                cacheManager.set(
-                    `stats:${interfaceName}:${period}`,
-                    { data: formatStatsOutput(stdout, period) },
-                    refreshInterval * 2
-                );
-            }
-        } catch (error) {
-            console.error(`周期采集接口 ${interfaceName}/${period} 失败:`, error.message);
-        } finally {
-            if (collectionsEnabled) scheduleAfter(collect, refreshInterval);
-        }
-    };
-
-    void collect();
-}
-
-// 启动时获取所有接口并为每个接口启动定时采集
+// 启动时不再为所有物理和虚拟接口预热；实时采集由 API 首次访问按需启动。
 function startAllScheduledCollections() {
     collectionsEnabled = true;
-    runVnstat(['--iflist'], (error, stdout) => {
-        let allInterfaces = [];
-        if (!error && stdout) {
-            allInterfaces = parseInterfaceList(stdout);
-        }
-        if (allInterfaces.length === 0) allInterfaces = ['eth0'];
-        allInterfaces.forEach(iface => {
-            scheduleRealtimeCollection(iface);
-            PERIODS.forEach(period => schedulePeriodCollection(iface, period));
-        });
-    });
 }
 
 function stopAllScheduledCollections() {
@@ -577,7 +578,6 @@ function stopAllScheduledCollections() {
     for (const timer of collectionTimers) clearTimeout(timer);
     collectionTimers.clear();
     startedRealtime.clear();
-    startedPeriod.clear();
 }
 
 if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
@@ -591,7 +591,9 @@ if (corsOrigins.length > 0) {
     app.use(cors({
         origin(origin, callback) {
             if (!origin || corsOrigins.includes(origin)) return callback(null, true);
-            return callback(new Error('来源不在 CORS 白名单中'));
+            const error = new Error('来源不在 CORS 白名单中');
+            error.status = 403;
+            return callback(error);
         }
     }));
 }
@@ -612,11 +614,17 @@ app.use(express.json({ limit: '16kb' }));
 
 const rateLimitWindowMs = parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, 60000);
 const rateLimitMax = parsePositiveInteger(process.env.RATE_LIMIT_MAX, 180);
+const rateLimitMaxClients = parsePositiveInteger(process.env.RATE_LIMIT_MAX_CLIENTS, 10000);
 const requestBuckets = new Map();
 app.use('/api', (req, res, next) => {
     const now = Date.now();
     const bucket = requestBuckets.get(req.ip);
     if (!bucket || now >= bucket.resetAt) {
+        while (requestBuckets.size >= rateLimitMaxClients) {
+            const oldestIp = requestBuckets.keys().next().value;
+            if (oldestIp === undefined) break;
+            requestBuckets.delete(oldestIp);
+        }
         requestBuckets.set(req.ip, { count: 1, resetAt: now + rateLimitWindowMs });
         return next();
     }
@@ -719,7 +727,7 @@ app.get('/api/interfaces', async (req, res) => {
 });
 
 // 获取统计数据
-app.get('/api/stats/:interface/:period', (req, res) => {
+app.get('/api/stats/:interface/:period', async (req, res) => {
     const { interface: interfaceName, period } = req.params;
     const validPeriods = ['l', '5', 'h', 'd', 'm', 'y'];
     if (!isValidInterfaceName(interfaceName)) {
@@ -735,8 +743,15 @@ app.get('/api/stats/:interface/:period', (req, res) => {
             const latest = cachedQueue[cachedQueue.length - 1];
             return res.json({ data: latest.data, timestamp: latest.timestamp });
         }
-        // 否则降级为现查现算
-        return getStatsWithoutCache(interfaceName, period, res);
+        // 首次请求直接等待一个样本；同接口并发请求复用同一个 vnstat 子进程。
+        try {
+            const entry = await collectRealtimeSample(interfaceName);
+            if (collectionsEnabled) scheduleRealtimeCollection(interfaceName);
+            if (!entry) return res.status(503).json({ error: '暂时无法读取实时流量统计' });
+            return res.json({ data: entry.data, timestamp: entry.timestamp });
+        } catch (_) {
+            return res.status(503).json({ error: '暂时无法读取实时流量统计' });
+        }
     }
     // 其他周期优先返回主动缓存
     const cachedData = cacheManager.get(`stats:${interfaceName}:${period}`);
@@ -941,6 +956,10 @@ app.get('/api/test/vnstat', requireAdminIfConfigured, async (req, res) => {
     }
 });
 
+app.use('/api', (req, res) => {
+    res.status(404).json({ error: 'API 路径不存在' });
+});
+
 // 错误处理中间件
 app.use((err, req, res, next) => {
     console.error('服务器错误:', err.stack);
@@ -973,10 +992,12 @@ app.use((err, req, res, next) => {
     }
     
     // 根据错误类型返回不同的响应
-    let statusCode = 500;
+    let statusCode = Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
     let errorMessage = '服务器内部错误';
     
-    if (err.code === 'ENOENT') {
+    if (statusCode === 403) {
+        errorMessage = '请求来源不被允许';
+    } else if (err.code === 'ENOENT') {
         statusCode = 503;
         errorMessage = '服务暂时不可用，请检查vnstat命令是否正确安装';
     } else if (err.code === 'ETIMEDOUT') {
@@ -990,7 +1011,7 @@ app.use((err, req, res, next) => {
     res.status(statusCode).json({ 
         error: errorMessage,
         timestamp: errorInfo.timestamp,
-        requestId: Math.random().toString(36).substr(2, 9)
+        requestId: crypto.randomUUID()
     });
 });
 
@@ -1067,5 +1088,6 @@ module.exports = {
     parseIsoDate,
     startServer,
     stopServer,
+    stripTerminalControlSequences,
     translateOutput
 };
