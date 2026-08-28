@@ -1,7 +1,7 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
+.env
 
 # Logs
 logs
@@ -30,4 +30,4 @@ coverage
 .vscode/
 *.swp
 *.swo
-.DS_Store 
+.DS_Store

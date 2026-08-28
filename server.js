@@ -1,18 +1,29 @@
 const express = require('express');
-const { exec } = require('child_process');
+require('dotenv').config({ quiet: true });
+const { execFile } = require('child_process');
 const cors = require('cors');
+const crypto = require('crypto');
+const path = require('path');
 const app = express();
 const packageJson = require('./package.json');
 
-// 从环境变量获取端口，如果没有则使用10089
-const port = process.env.PORT || 10089;
+function parsePositiveInteger(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// 运行配置只从进程环境读取；生产环境由 PM2/systemd 显式注入。
+const port = parsePositiveInteger(process.env.PORT, 10089);
+const host = process.env.HOST || '0.0.0.0';
+const commandTimeout = parsePositiveInteger(process.env.VNSTAT_COMMAND_TIMEOUT_MS, 15000);
+const maxRangeDays = parsePositiveInteger(process.env.MAX_RANGE_DAYS, 3660);
 
 // 缓存配置
 const cacheConfig = {
-    maxSize: parseInt(process.env.CACHE_MAX_SIZE) || 100,
-    maxMemoryMB: parseInt(process.env.CACHE_MAX_MEMORY_MB) || 50,
-    cleanupInterval: parseInt(process.env.CACHE_CLEANUP_INTERVAL) || 60000, // 1分钟
-    memoryMonitorInterval: parseInt(process.env.MEMORY_MONITOR_INTERVAL) || 300000 // 5分钟
+    maxSize: parsePositiveInteger(process.env.CACHE_MAX_SIZE, 100),
+    maxMemoryMB: parsePositiveInteger(process.env.CACHE_MAX_MEMORY_MB, 50),
+    cleanupInterval: parsePositiveInteger(process.env.CACHE_CLEANUP_INTERVAL, 60000),
+    memoryMonitorInterval: parsePositiveInteger(process.env.MEMORY_MONITOR_INTERVAL, 300000)
 };
 
 // 缓存管理器类
@@ -29,7 +40,8 @@ class CacheManager {
         };
         
         // 定期清理过期缓存
-        setInterval(() => this.cleanup(), cacheConfig.cleanupInterval);
+        this.cleanupTimer = setInterval(() => this.cleanup(), cacheConfig.cleanupInterval);
+        this.cleanupTimer.unref?.();
     }
 
     // 生成缓存键
@@ -58,19 +70,34 @@ class CacheManager {
         return item.data;
     }
 
+    // 后台采集读取缓存时不应污染面向 API 请求的命中率。
+    peek(key) {
+        const item = this.cache.get(key);
+        if (!item || Date.now() > item.expiresAt) {
+            if (item) this.cache.delete(key);
+            return null;
+        }
+        item.lastAccessed = Date.now();
+        return item.data;
+    }
+
     // 设置缓存
     set(key, data, ttlMs = 60000) {
-        // 检查内存使用
-        if (this.shouldEvict()) {
-            this.evictLRU();
-        }
-
         const item = {
             data,
             expiresAt: Date.now() + ttlMs,
             lastAccessed: Date.now(),
             size: this.estimateSize(data)
         };
+
+        // 更新同名条目前先移除旧值，避免容量和内存估算失真。
+        this.cache.delete(key);
+        while (
+            this.cache.size > 0 &&
+            (this.cache.size >= this.maxSize || this.getCurrentMemoryUsage() + item.size > this.maxMemoryBytes)
+        ) {
+            if (!this.evictLRU()) break;
+        }
 
         this.cache.set(key, item);
         this.stats.sets++;
@@ -95,11 +122,6 @@ class CacheManager {
         }
     }
 
-    // 检查是否需要清理
-    shouldEvict() {
-        return this.cache.size >= this.maxSize || this.getCurrentMemoryUsage() > this.maxMemoryBytes;
-    }
-
     // 清理LRU项目
     evictLRU() {
         let oldestKey = null;
@@ -114,7 +136,10 @@ class CacheManager {
 
         if (oldestKey) {
             this.cache.delete(oldestKey);
+            this.stats.deletes++;
+            return true;
         }
+        return false;
     }
 
     // 估算数据大小（字节）
@@ -156,6 +181,11 @@ class CacheManager {
     // 清空所有缓存
     clear() {
         this.cache.clear();
+    }
+
+
+    close() {
+        clearInterval(this.cleanupTimer);
     }
 }
 
@@ -205,9 +235,13 @@ const translations = {
     'last month': '最近30天'
 };
 
-// 预编译正则表达式以提高性能
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 预编译正则表达式以提高性能，并避免映射键被当作正则语法。
 const compiledTranslations = Object.entries(translations).map(([key, value]) => ({
-    regex: new RegExp(`\\b${key}\\b`, 'gi'),
+    regex: new RegExp(`\\b${escapeRegExp(key)}\\b`, 'gi'),
     value
 }));
 
@@ -337,120 +371,198 @@ function filterStatsByTime(lines, period) {
     });
 }
 
+function normalizeValue(value, targetUnit) {
+    if (!value) return value;
+    const match = value.match(/([\d.]+)\s*(MiB|GiB|TiB)?/i);
+    if (!match) return value;
+
+    let valueInMiB = Number.parseFloat(match[1]);
+    const sourceUnit = (match[2] || 'MiB').toUpperCase();
+    if (sourceUnit === 'GIB') valueInMiB *= 1024;
+    if (sourceUnit === 'TIB') valueInMiB *= 1024 * 1024;
+
+    if (targetUnit === 'GiB') return `${(valueInMiB / 1024).toFixed(2)} GiB`;
+    if (targetUnit === 'TiB') return `${(valueInMiB / (1024 * 1024)).toFixed(2)} TiB`;
+    return `${valueInMiB.toFixed(2)} MiB`;
+}
+
+function normalizeStatsLines(lines, period, targetUnit = periodUnitMap[period] || 'MiB') {
+    return lines.map(line => {
+        if (line.includes('---') || !line.trim()) return line;
+        if ((period === 'm' || period === 'y') && line.includes('预计')) return null;
+
+        if (line.includes('接收')) {
+            for (const label of ['时间', '小时', '日期', '月份', '年份']) {
+                if (line.includes(label)) {
+                    return `${label}\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
+                }
+            }
+        }
+
+        line = line.replace(/^(\s*\d{2}(:\d{2})?)(\s+)/, '$1 |$3');
+        line = line.replace(/^(\s*\d{4}-\d{2}-\d{2})(\s+)/, '$1 |$2');
+        line = line.replace(/^(\s*\d{4}-\d{2})(\s+)/, '$1 |$2');
+        line = line.replace(/^(\s*\d{4})(\s+)/, '$1 |$2');
+
+        const parts = line.split('|');
+        if (parts.length < 4) return line;
+        parts[1] = ` ${normalizeValue(parts[1].trim(), targetUnit)}`;
+        parts[2] = ` ${normalizeValue(parts[2].trim(), targetUnit)}`;
+        parts[3] = ` ${normalizeValue(parts[3].trim(), targetUnit)}`;
+        return parts.join('|');
+    }).filter(Boolean);
+}
+
+function formatStatsOutput(stdout, period) {
+    let lines = translateOutput(stdout).split('\n');
+    if (period === '5') lines = filterStatsByTime(lines, 'minutes');
+    if (period === 'h') lines = filterStatsByTime(lines, 'hours');
+    if (period === 'd') lines = filterStatsByTime(lines, 'days');
+    if (period === 'l') return lines;
+    return normalizeStatsLines(lines, period);
+}
+
+function isValidInterfaceName(interfaceName) {
+    return typeof interfaceName === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9:._-]*$/.test(interfaceName);
+}
+
+function parseInterfaceList(output) {
+    const line = String(output || '')
+        .split('\n')
+        .find(candidate => candidate.includes('Available interfaces:'));
+    if (!line) return [];
+
+    const tokens = line.replace(/^.*Available interfaces:\s*/, '').trim().split(/\s+/);
+    const interfaces = [];
+    let insideDetails = false;
+    for (const token of tokens) {
+        if (token.startsWith('(')) insideDetails = true;
+        if (!insideDetails && isValidInterfaceName(token)) interfaces.push(token);
+        if (insideDetails && token.endsWith(')')) insideDetails = false;
+    }
+    return interfaces;
+}
+
+function parseIsoDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return null;
+    const [year, month, day] = value.split('-').map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+        parsed.getUTCFullYear() !== year ||
+        parsed.getUTCMonth() !== month - 1 ||
+        parsed.getUTCDate() !== day
+    ) return null;
+    return parsed;
+}
+
+function runVnstat(args, options, callback) {
+    const normalizedOptions = typeof options === 'function' ? {} : options;
+    const normalizedCallback = typeof options === 'function' ? options : callback;
+    execFile('vnstat', args, {
+        timeout: commandTimeout,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+        ...normalizedOptions
+    }, normalizedCallback);
+}
+
+function runVnstatPromise(args, options = {}) {
+    return new Promise((resolve, reject) => {
+        runVnstat(args, options, (error, stdout, stderr) => {
+            if (error) {
+                error.stderr = stderr;
+                reject(error);
+                return;
+            }
+            resolve(stdout);
+        });
+    });
+}
+
 // ========== 主动定时采集和缓存vnstat数据 ========== //
 const REALTIME_CACHE_SIZE = 20;
 const REALTIME_INTERVAL = 5000; // 5秒
 const PERIODS = ['5', 'h', 'd', 'm', 'y'];
-const PERIOD_INTERVAL = 3 * 60 * 1000; // 3分钟
 
-// 记录已采集的接口，避免重复定时
+// 记录采集状态和计时器，避免同一接口的慢命令重叠执行。
 const startedRealtime = new Set();
 const startedPeriod = new Set();
+const collectionTimers = new Set();
+let collectionsEnabled = false;
+
+function scheduleAfter(task, delay) {
+    const timer = setTimeout(async () => {
+        collectionTimers.delete(timer);
+        await task();
+    }, delay);
+    timer.unref?.();
+    collectionTimers.add(timer);
+}
 
 function scheduleRealtimeCollection(interfaceName) {
     if (startedRealtime.has(interfaceName)) return;
     startedRealtime.add(interfaceName);
-    setInterval(() => {
-        exec(`vnstat -tr 5 -i ${interfaceName}`, (error, stdout, stderr) => {
-            if (!error && stdout) {
-                const translatedOutput = translateOutput(stdout);
-                let queue = cacheManager.get(`realtime:${interfaceName}`) || [];
-                queue.push(translatedOutput.split('\n'));
+
+    const collect = async () => {
+        const startedAt = Date.now();
+        try {
+            const stdout = await runVnstatPromise(['-tr', '5', '-i', interfaceName], { timeout: commandTimeout });
+            if (stdout) {
+                const entry = {
+                    timestamp: Date.now(),
+                    data: translateOutput(stdout).split('\n')
+                };
+                const queue = cacheManager.peek(`realtime:${interfaceName}`) || [];
+                queue.push(entry);
                 if (queue.length > REALTIME_CACHE_SIZE) queue.shift();
-                cacheManager.set(`realtime:${interfaceName}`, queue, REALTIME_CACHE_SIZE * REALTIME_INTERVAL);
+                cacheManager.set(`realtime:${interfaceName}`, queue, REALTIME_CACHE_SIZE * REALTIME_INTERVAL * 2);
             }
-        });
-    }, REALTIME_INTERVAL);
+        } catch (error) {
+            console.error(`实时采集接口 ${interfaceName} 失败:`, error.message);
+        } finally {
+            if (collectionsEnabled) {
+                scheduleAfter(collect, Math.max(0, REALTIME_INTERVAL - (Date.now() - startedAt)));
+            }
+        }
+    };
+
+    void collect();
 }
 
 function schedulePeriodCollection(interfaceName, period) {
     const key = `${interfaceName}:${period}`;
     if (startedPeriod.has(key)) return;
     startedPeriod.add(key);
-    setInterval(() => {
-        let cmd = period === '5' ? `vnstat -5 -i ${interfaceName}` : `vnstat -${period} -i ${interfaceName}`;
-        exec(cmd, (error, stdout, stderr) => {
-            if (!error && stdout) {
-                let translatedOutput = translateOutput(stdout);
-                let lines = translatedOutput.split('\n');
-                // 过滤和单位归一化处理（复用getStatsWithoutCache的逻辑）
-                switch(period) {
-                    case '5': lines = filterStatsByTime(lines, 'minutes'); break;
-                    case 'h': lines = filterStatsByTime(lines, 'hours'); break;
-                    case 'd': lines = filterStatsByTime(lines, 'days'); break;
-                }
-                // 单位归一化
-                const periodUnitMap = { '5': 'MiB', 'h': 'MiB', 'd': 'GiB', 'm': 'GiB', 'y': 'TiB' };
-                const targetUnit = periodUnitMap[period] || 'MiB';
-                function normalizeValue(val, targetUnit) {
-                    if (!val) return val;
-                    const match = val.match(/([\d.]+)\s*(MiB|GiB|TiB)?/i);
-                    if (!match) return val;
-                    const num = parseFloat(match[1]);
-                    const unit = (match[2] || 'MiB').toUpperCase();
-                    let normalizedNum = num;
-                    if (unit === 'GIB') normalizedNum *= 1024;
-                    if (unit === 'TIB') normalizedNum *= 1024 * 1024;
-                    if (targetUnit === 'GiB') {
-                        normalizedNum = normalizedNum / 1024;
-                        return `${normalizedNum.toFixed(2)} GiB`;
-                    } else if (targetUnit === 'TiB') {
-                        normalizedNum = normalizedNum / (1024 * 1024);
-                        return `${normalizedNum.toFixed(2)} TiB`;
-                    } else {
-                        return `${normalizedNum.toFixed(2)} MiB`;
-                    }
-                }
-                lines = lines.map((line, idx) => {
-                    if (line.includes('---') || !line.trim()) return line;
-                    if ((period === 'm' || period === 'y') && line.includes('预计')) return null;
-                    // 强制修正表头
-                    if (line.includes('接收') &&
-                        (line.includes('时间') || line.includes('小时') || line.includes('日期') || line.includes('月份') || line.includes('年份'))
-                    ) {
-                        if (line.includes('时间')) return `时间\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-                        if (line.includes('小时')) return `小时\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-                        if (line.includes('日期')) return `日期\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-                        if (line.includes('月份')) return `月份\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-                        if (line.includes('年份')) return `年份\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-                    }
-                    // 分隔符
-                    line = line.replace(/^(\s*\d{2}(:\d{2})?)(\s+)/, '$1 |$3');
-                    line = line.replace(/^(\s*\d{4}-\d{2}-\d{2})(\s+)/, '$1 |$2');
-                    line = line.replace(/^(\s*\d{4}-\d{2})(\s+)/, '$1 |$2');
-                    line = line.replace(/^(\s*\d{4})(\s+)/, '$1 |$2');
-                    if (['5', 'h', 'd', 'm', 'y'].includes(period)) {
-                        let parts = line.split('|');
-                        if (parts.length < 5) return line;
-                        let rx = parts[1].trim();
-                        let tx = parts[2].trim();
-                        let total = parts[3].trim();
-                        parts[1] = ' ' + normalizeValue(rx, targetUnit);
-                        parts[2] = ' ' + normalizeValue(tx, targetUnit);
-                        parts[3] = ' ' + normalizeValue(total, targetUnit);
-                        return parts.join('|');
-                    }
-                    return line;
-                }).filter(Boolean);
-                const result = { data: lines };
-                cacheManager.set(`stats:${interfaceName}:${period}`, result, PERIOD_INTERVAL * 2);
+
+    const collect = async () => {
+        const refreshInterval = getCacheTimeForPeriod(period);
+        try {
+            const args = period === '5' ? ['-5', '-i', interfaceName] : [`-${period}`, '-i', interfaceName];
+            const stdout = await runVnstatPromise(args);
+            if (stdout) {
+                cacheManager.set(
+                    `stats:${interfaceName}:${period}`,
+                    { data: formatStatsOutput(stdout, period) },
+                    refreshInterval * 2
+                );
             }
-        });
-    }, PERIOD_INTERVAL);
+        } catch (error) {
+            console.error(`周期采集接口 ${interfaceName}/${period} 失败:`, error.message);
+        } finally {
+            if (collectionsEnabled) scheduleAfter(collect, refreshInterval);
+        }
+    };
+
+    void collect();
 }
 
 // 启动时获取所有接口并为每个接口启动定时采集
 function startAllScheduledCollections() {
-    exec('vnstat --iflist', (error, stdout, stderr) => {
+    collectionsEnabled = true;
+    runVnstat(['--iflist'], (error, stdout) => {
         let allInterfaces = [];
         if (!error && stdout) {
-            allInterfaces = stdout
-                .split('\n')
-                .find(line => line.includes('Available interfaces:'))
-                ?.replace('Available interfaces:', '')
-                .trim()
-                .split(' ')
-                .filter(Boolean) || [];
+            allInterfaces = parseInterfaceList(stdout);
         }
         if (allInterfaces.length === 0) allInterfaces = ['eth0'];
         allInterfaces.forEach(iface => {
@@ -460,13 +572,100 @@ function startAllScheduledCollections() {
     });
 }
 
-// 启动定时采集
-startAllScheduledCollections();
+function stopAllScheduledCollections() {
+    collectionsEnabled = false;
+    for (const timer of collectionTimers) clearTimeout(timer);
+    collectionTimers.clear();
+    startedRealtime.clear();
+    startedPeriod.clear();
+}
 
-// 启用CORS和JSON解析
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+if (corsOrigins.length > 0) {
+    app.use(cors({
+        origin(origin, callback) {
+            if (!origin || corsOrigins.includes(origin)) return callback(null, true);
+            return callback(new Error('来源不在 CORS 白名单中'));
+        }
+    }));
+}
+
+app.use((req, res, next) => {
+    res.set({
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'Referrer-Policy': 'no-referrer',
+        'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+        // 当前无构建版 Vue 需要运行时编译模板，因此暂时保留 unsafe-eval；脚本来源仍限制为本站。
+        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    });
+    next();
+});
+
+app.use(express.json({ limit: '16kb' }));
+
+const rateLimitWindowMs = parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, 60000);
+const rateLimitMax = parsePositiveInteger(process.env.RATE_LIMIT_MAX, 180);
+const requestBuckets = new Map();
+app.use('/api', (req, res, next) => {
+    const now = Date.now();
+    const bucket = requestBuckets.get(req.ip);
+    if (!bucket || now >= bucket.resetAt) {
+        requestBuckets.set(req.ip, { count: 1, resetAt: now + rateLimitWindowMs });
+        return next();
+    }
+    bucket.count++;
+    if (bucket.count > rateLimitMax) {
+        res.set('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+        return res.status(429).json({ error: '请求过于频繁，请稍后重试' });
+    }
+    next();
+});
+
+const bucketCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, bucket] of requestBuckets) {
+        if (now >= bucket.resetAt) requestBuckets.delete(ip);
+    }
+}, rateLimitWindowMs);
+bucketCleanupTimer.unref?.();
+
+app.use('/vendor/bootstrap', express.static(path.join(__dirname, 'node_modules/bootstrap/dist')));
+app.use('/vendor/bootstrap-icons', express.static(path.join(__dirname, 'node_modules/bootstrap-icons/font')));
+app.use('/vendor/chart.js', express.static(path.join(__dirname, 'node_modules/chart.js/dist')));
+app.use('/vendor/vue', express.static(path.join(__dirname, 'node_modules/vue/dist')));
+app.use('/vendor/axios', express.static(path.join(__dirname, 'node_modules/axios/dist')));
+app.use(express.static(path.join(__dirname, 'public')));
+
+function requireAdminIfConfigured(req, res, next) {
+    const expected = process.env.ADMIN_TOKEN;
+    if (!expected) {
+        const origin = req.get('Origin');
+        if (!origin) return next();
+        try {
+            if (new URL(origin).host === req.get('host')) return next();
+        } catch (_) {
+            // 非法 Origin 按跨站请求处理。
+        }
+        return res.status(403).json({ error: '拒绝跨站管理请求' });
+    }
+    const provided = req.get('X-Admin-Token') || '';
+    const expectedBuffer = Buffer.from(expected);
+    const providedBuffer = Buffer.from(provided);
+    if (
+        expectedBuffer.length !== providedBuffer.length ||
+        !crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+    ) {
+        return res.status(401).json({ error: '需要管理员凭据' });
+    }
+    next();
+}
 
 // 获取网络接口列表
 app.get('/api/interfaces', async (req, res) => {
@@ -480,28 +679,17 @@ app.get('/api/interfaces', async (req, res) => {
         }
 
         // 获取所有接口列表
-        const iflistResult = await new Promise((resolve, reject) => {
-            exec('vnstat --iflist', (error, stdout, stderr) => {
-                if (error) reject(error);
-                else resolve(stdout);
-            });
-        });
+        const iflistResult = await runVnstatPromise(['--iflist']);
 
         // 解析接口列表
-        const allInterfaces = iflistResult
-            .split('\n')
-            .find(line => line.includes('Available interfaces:'))
-            ?.replace('Available interfaces:', '')
-            .trim()
-            .split(' ')
-            .filter(Boolean) || [];
+        const allInterfaces = parseInterfaceList(iflistResult);
 
         // 验证每个接口是否有效
         const validInterfaces = [];
         for (const interface of allInterfaces) {
             try {
                 await new Promise((resolve, reject) => {
-                    exec(`vnstat -i ${interface} --oneline`, (error, stdout, stderr) => {
+                    runVnstat(['-i', interface, '--oneline'], (error, stdout) => {
                         if (!error && stdout.trim()) {
                             validInterfaces.push(interface);
                         }
@@ -525,7 +713,8 @@ app.get('/api/interfaces', async (req, res) => {
         
         res.json(result);
     } catch (error) {
-        res.status(500).json({ error: `获取网络接口列表失败: ${error.message}` });
+        console.error('获取网络接口列表失败:', error.message);
+        res.status(503).json({ error: '无法读取 vnstat 网络接口，请检查服务状态' });
     }
 });
 
@@ -533,7 +722,7 @@ app.get('/api/interfaces', async (req, res) => {
 app.get('/api/stats/:interface/:period', (req, res) => {
     const { interface: interfaceName, period } = req.params;
     const validPeriods = ['l', '5', 'h', 'd', 'm', 'y'];
-    if (!interfaceName.match(/^[a-zA-Z0-9]+[a-zA-Z0-9:._-]*$/)) {
+    if (!isValidInterfaceName(interfaceName)) {
         return res.status(400).json({ error: '无效的接口名称' });
     }
     if (!validPeriods.includes(period)) {
@@ -543,9 +732,8 @@ app.get('/api/stats/:interface/:period', (req, res) => {
         // 优先返回主动缓存的实时数据
         const cachedQueue = cacheManager.get(`realtime:${interfaceName}`);
         if (cachedQueue && cachedQueue.length > 0) {
-            // 拍平为一维字符串数组，兼容前端
-            const flat = cachedQueue.flat();
-            return res.json({ data: flat });
+            const latest = cachedQueue[cachedQueue.length - 1];
+            return res.json({ data: latest.data, timestamp: latest.timestamp });
         }
         // 否则降级为现查现算
         return getStatsWithoutCache(interfaceName, period, res);
@@ -558,7 +746,7 @@ app.get('/api/stats/:interface/:period', (req, res) => {
     // 否则降级为现查现算
     getStatsWithoutCache(interfaceName, period, res, (result) => {
         // 缓存结果
-        cacheManager.set(`stats:${interfaceName}:${period}`, result, PERIOD_INTERVAL * 2);
+        cacheManager.set(`stats:${interfaceName}:${period}`, result, getCacheTimeForPeriod(period));
     });
 });
 
@@ -576,123 +764,24 @@ function getCacheTimeForPeriod(period) {
 
 // 获取统计数据（无缓存）
 function getStatsWithoutCache(interface, period, res, callback) {
-    let cmd;
+    let args;
     switch(period) {
         case 'l':
-            cmd = `vnstat -tr 5 -i ${interface}`;
+            args = ['-tr', '5', '-i', interface];
             break;
         case '5':
-            cmd = `vnstat -5 -i ${interface}`;
+            args = ['-5', '-i', interface];
             break;
         default:
-            cmd = `vnstat -${period} -i ${interface}`;
+            args = [`-${period}`, '-i', interface];
     }
     
-    exec(cmd, (error, stdout, stderr) => {
+    runVnstat(args, (error, stdout) => {
         if (error) {
-            return res.status(500).json({ error: error.message });
+            console.error(`读取接口 ${interface}/${period} 失败:`, error.message);
+            return res.status(503).json({ error: '暂时无法读取流量统计' });
         }
-
-        let translatedOutput = translateOutput(stdout);
-        let lines = translatedOutput.split('\n');
-
-        // 根据不同时间周期过滤数据
-        switch(period) {
-            case '5':
-                lines = filterStatsByTime(lines, 'minutes');
-                break;
-            case 'h':
-                lines = filterStatsByTime(lines, 'hours');
-                break;
-            case 'd':
-                lines = filterStatsByTime(lines, 'days');
-                break;
-        }
-
-        // 单位归一化辅助函数
-        function normalizeValue(val, targetUnit) {
-            if (!val) return val;
-            const match = val.match(/([\d.]+)\s*(MiB|GiB|TiB)?/i);
-            if (!match) return val;
-            const num = parseFloat(match[1]);
-            const unit = (match[2] || 'MiB').toUpperCase();
-            
-            // 统一换算为MiB
-            let normalizedNum = num;
-            if (unit === 'GIB') normalizedNum *= 1024;
-            if (unit === 'TIB') normalizedNum *= 1024 * 1024;
-            
-            // 目标单位
-            if (targetUnit === 'GiB') {
-                normalizedNum = normalizedNum / 1024;
-                return `${normalizedNum.toFixed(2)} GiB`;
-            } else if (targetUnit === 'TiB') {
-                normalizedNum = normalizedNum / (1024 * 1024);
-                return `${normalizedNum.toFixed(2)} TiB`;
-            } else {
-                return `${normalizedNum.toFixed(2)} MiB`;
-            }
-        }
-
-        // 获取当前周期目标单位
-        const targetUnit = periodUnitMap[period] || 'MiB';
-
-        // 强制生成标准表头（不依赖原始内容）
-        function forceHeader(line) {
-            // 判断表头类型
-            if (line.includes('时间')) {
-                return `时间\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            } else if (line.includes('小时')) {
-                return `小时\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            } else if (line.includes('日期')) {
-                return `日期\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            } else if (line.includes('月份')) {
-                return `月份\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            } else if (line.includes('年份')) {
-                return `年份\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            }
-            return line;
-        }
-
-        lines = lines.map((line, idx) => {
-            // 跳过分隔线、空行
-            if (line.includes('---') || !line.trim()) return line;
-            // 月/年卡片去掉"预计"行
-            if ((period === 'm' || period === 'y') && line.includes('预计')) return null;
-            // 强制修正表头
-            if (line.includes('接收') &&
-                (line.includes('时间') || line.includes('小时') || line.includes('日期') || line.includes('月份') || line.includes('年份'))
-            ) {
-                return forceHeader(line);
-            }
-            // 处理数据行分隔符
-            // 时间（分钟/小时）
-            line = line.replace(/^(\s*\d{2}(:\d{2})?)(\s+)/, '$1 |$3');
-            // 日期（YYYY-MM-DD）
-            line = line.replace(/^(\s*\d{4}-\d{2}-\d{2})(\s+)/, '$1 |$2');
-            // 月份（YYYY-MM）
-            line = line.replace(/^(\s*\d{4}-\d{2})(\s+)/, '$1 |$2');
-            // 年份（YYYY）
-            line = line.replace(/^(\s*\d{4})(\s+)/, '$1 |$2');
-
-            // 单位归一化处理
-            if (['5', 'h', 'd', 'm', 'y'].includes(period)) {
-                // 用 | 分割，找到接收/发送/总计字段
-                let parts = line.split('|');
-                if (parts.length < 5) return line; // 不处理异常行
-                // 只处理数据部分（去除首尾空格）
-                let rx = parts[1].trim();
-                let tx = parts[2].trim();
-                let total = parts[3].trim();
-                parts[1] = ' ' + normalizeValue(rx, targetUnit);
-                parts[2] = ' ' + normalizeValue(tx, targetUnit);
-                parts[3] = ' ' + normalizeValue(total, targetUnit);
-                return parts.join('|');
-            }
-            return line;
-        }).filter(Boolean);
-
-        const result = { data: lines };
+        const result = { data: formatStatsOutput(stdout, period) };
         
         // 如果有回调函数，执行回调
         if (callback) {
@@ -707,14 +796,21 @@ function getStatsWithoutCache(interface, period, res, callback) {
 app.get('/api/stats/:interface/range/:startDate/:endDate', (req, res) => {
     const { interface, startDate, endDate } = req.params;
     
-    if (!interface.match(/^[a-zA-Z0-9]+[a-zA-Z0-9:._-]*$/)) {
+    if (!isValidInterfaceName(interface)) {
         return res.status(400).json({ error: '无效的接口名称' });
     }
 
-    // 验证日期格式 (YYYY-MM-DD)
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
+    const parsedStartDate = parseIsoDate(startDate);
+    const parsedEndDate = parseIsoDate(endDate);
+    if (!parsedStartDate || !parsedEndDate) {
         return res.status(400).json({ error: '无效的日期格式' });
+    }
+    if (parsedStartDate > parsedEndDate) {
+        return res.status(400).json({ error: '开始日期不能晚于结束日期' });
+    }
+    const rangeDays = Math.floor((parsedEndDate - parsedStartDate) / 86400000) + 1;
+    if (rangeDays > maxRangeDays) {
+        return res.status(400).json({ error: `日期范围不能超过 ${maxRangeDays} 天` });
     }
 
     // 检查缓存
@@ -725,80 +821,14 @@ app.get('/api/stats/:interface/range/:startDate/:endDate', (req, res) => {
         return res.json(cachedData);
     }
 
-    const cmd = `vnstat -i ${interface} --begin ${startDate} --end ${endDate} -d`;
-    
-    exec(cmd, (error, stdout, stderr) => {
+    runVnstat(['-i', interface, '--begin', startDate, '--end', endDate, '-d'], (error, stdout) => {
         if (error) {
-            return res.status(500).json({ error: error.message });
+            console.error(`读取接口 ${interface} 日期范围失败:`, error.message);
+            return res.status(503).json({ error: '暂时无法读取日期范围统计' });
         }
-
-        let translatedOutput = translateOutput(stdout);
-        let lines = translatedOutput.split('\n');
-
-        // 单位归一化辅助函数
-        function normalizeValue(val, targetUnit) {
-            if (!val) return val;
-            const match = val.match(/([\d.]+)\s*(MiB|GiB|TiB)?/i);
-            if (!match) return val;
-            const num = parseFloat(match[1]);
-            const unit = (match[2] || 'MiB').toUpperCase();
-            
-            // 统一换算为MiB
-            let normalizedNum = num;
-            if (unit === 'GIB') normalizedNum *= 1024;
-            if (unit === 'TIB') normalizedNum *= 1024 * 1024;
-            
-            // 目标单位
-            if (targetUnit === 'GiB') {
-                normalizedNum = normalizedNum / 1024;
-                return `${normalizedNum.toFixed(2)} GiB`;
-            } else if (targetUnit === 'TiB') {
-                normalizedNum = normalizedNum / (1024 * 1024);
-                return `${normalizedNum.toFixed(2)} TiB`;
-            } else {
-                return `${normalizedNum.toFixed(2)} MiB`;
-            }
-        }
-
-        // 指定日期查询固定使用GiB单位
-        const targetUnit = 'GiB';
-
-        // 强制生成标准表头（5列格式）
-        function forceHeader(line) {
-            if (line.includes('日期')) {
-                return `日期\t| 接收(${targetUnit})\t| 发送(${targetUnit})\t| 总计(${targetUnit})\t| 平均速率`;
-            }
-            return line;
-        }
-
-        lines = lines.map((line, idx) => {
-            // 跳过分隔线、空行
-            if (line.includes('---') || !line.trim()) return line;
-            // 强制修正表头
-            if (line.includes('接收') && line.includes('日期')) {
-                return forceHeader(line);
-            }
-            // 处理数据行分隔符
-            // 日期（YYYY-MM-DD）
-            line = line.replace(/^(\s*\d{4}-\d{2}-\d{2})(\s+)/, '$1 |$2');
-
-            // 单位归一化处理
-            // 用 | 分割，找到接收/发送/总计字段
-            let parts = line.split('|');
-            if (parts.length >= 4) {
-                // 只处理数据部分（去除首尾空格）
-                let rx = parts[1].trim();
-                let tx = parts[2].trim();
-                let total = parts[3].trim();
-                parts[1] = ' ' + normalizeValue(rx, targetUnit);
-                parts[2] = ' ' + normalizeValue(tx, targetUnit);
-                parts[3] = ' ' + normalizeValue(total, targetUnit);
-                return parts.join('|');
-            }
-            return line;
-        }).filter(Boolean);
-
-        const result = { data: lines };
+        const result = {
+            data: normalizeStatsLines(translateOutput(stdout).split('\n'), 'range', 'GiB')
+        };
         
         // 缓存结果（10分钟）
         cacheManager.set(cacheKey, result, 10 * 60 * 1000);
@@ -818,7 +848,7 @@ app.get('/api/cache/stats', (req, res) => {
 });
 
 // 添加缓存清理API
-app.post('/api/cache/clear', (req, res) => {
+app.post('/api/cache/clear', requireAdminIfConfigured, (req, res) => {
     cacheManager.clear();
     res.json({ message: '缓存已清空' });
 });
@@ -857,46 +887,36 @@ app.get('/api/system/status', async (req, res) => {
 
         // 检查vnstat命令是否可用
         try {
-            const vnstatResult = await new Promise((resolve, reject) => {
-                exec('vnstat --version', { timeout: 5000 }, (error, stdout, stderr) => {
-                    if (error) reject(error);
-                    else resolve(stdout);
-                });
-            });
+            const vnstatResult = await runVnstatPromise(['--version'], { timeout: 5000 });
             status.vnstat.available = true;
             status.vnstat.version = vnstatResult.trim();
         } catch (error) {
-            status.vnstat.error = error.message;
+            status.vnstat.error = 'vnstat 命令不可用';
         }
 
         res.json(status);
     } catch (error) {
+        console.error('服务器状态检查失败:', error.message);
         res.status(500).json({ 
-            error: '服务器状态检查失败', 
-            details: error.message 
+            error: '服务器状态检查失败'
         });
     }
 });
 
 // 添加vnstat命令测试API
-app.get('/api/test/vnstat', async (req, res) => {
+app.get('/api/test/vnstat', requireAdminIfConfigured, async (req, res) => {
     try {
         const testCommands = [
-            { name: 'version', cmd: 'vnstat --version' },
-            { name: 'iflist', cmd: 'vnstat --iflist' },
-            { name: 'help', cmd: 'vnstat --help' }
+            { name: 'version', args: ['--version'] },
+            { name: 'iflist', args: ['--iflist'] },
+            { name: 'help', args: ['--help'] }
         ];
 
         const results = {};
         
         for (const test of testCommands) {
             try {
-                const result = await new Promise((resolve, reject) => {
-                    exec(test.cmd, { timeout: 10000 }, (error, stdout, stderr) => {
-                        if (error) reject(error);
-                        else resolve(stdout);
-                    });
-                });
+                const result = await runVnstatPromise(test.args, { timeout: 10000 });
                 results[test.name] = {
                     success: true,
                     output: result.trim()
@@ -904,7 +924,7 @@ app.get('/api/test/vnstat', async (req, res) => {
             } catch (error) {
                 results[test.name] = {
                     success: false,
-                    error: error.message
+                    error: '命令执行失败'
                 };
             }
         }
@@ -914,9 +934,9 @@ app.get('/api/test/vnstat', async (req, res) => {
             results
         });
     } catch (error) {
+        console.error('vnstat 测试失败:', error.message);
         res.status(500).json({ 
-            error: 'vnstat测试失败', 
-            details: error.message 
+            error: 'vnstat测试失败'
         });
     }
 });
@@ -974,47 +994,78 @@ app.use((err, req, res, next) => {
     });
 });
 
-// 启动服务器
-const server = app.listen(port, () => {
-    console.log(`服务器运行在 http://localhost:${port}`);
-    console.log(`缓存配置: 最大条目=${cacheConfig.maxSize}, 最大内存=${cacheConfig.maxMemoryMB}MB`);
-    
-    // 检查vnstat命令可用性
-    exec('vnstat --version', (error, stdout, stderr) => {
-        if (error) {
-            console.error('⚠️  vnstat命令不可用:', error.message);
-            console.error('请确保已安装vnstat:');
-            console.error('  Ubuntu/Debian: sudo apt-get install vnstat');
-            console.error('  CentOS/RHEL: sudo yum install vnstat');
-            console.error('  Windows: 请安装WSL或使用其他网络监控工具');
+let server = null;
+let memoryMonitorTimer = null;
+
+function startServer() {
+    if (server) return server;
+    startAllScheduledCollections();
+    server = app.listen(port, host, () => {
+        console.log(`服务器运行在 http://${host}:${port}`);
+        console.log(`缓存配置: 最大条目=${cacheConfig.maxSize}, 最大内存=${cacheConfig.maxMemoryMB}MB`);
+
+        runVnstat(['--version'], (error, stdout) => {
+            if (error) {
+                console.error('⚠️  vnstat命令不可用:', error.message);
+                console.error('请确保已安装并启动 vnstat');
+            } else {
+                console.log('✅ vnstat命令可用:', stdout.trim());
+            }
+        });
+
+        memoryMonitorTimer = setInterval(() => {
+            const memUsage = process.memoryUsage();
+            const cacheStats = cacheManager.getStats();
+            console.log(`内存使用: RSS=${(memUsage.rss / 1024 / 1024).toFixed(2)}MB, 缓存=${cacheStats.memoryUsage}, 命中率=${cacheStats.hitRate}`);
+        }, cacheConfig.memoryMonitorInterval);
+        memoryMonitorTimer.unref?.();
+    });
+
+    server.on('error', err => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`端口 ${port} 已被占用，请设置 PORT 使用其他端口`);
         } else {
-            console.log('✅ vnstat命令可用:', stdout.trim());
+            console.error('启动服务器时发生错误:', err);
         }
     });
-    
-    // 启动内存监控
-    setInterval(() => {
-        const memUsage = process.memoryUsage();
-        const cacheStats = cacheManager.getStats();
-        console.log(`内存使用: RSS=${(memUsage.rss / 1024 / 1024).toFixed(2)}MB, 缓存=${cacheStats.memoryUsage}, 命中率=${cacheStats.hitRate}`);
-    }, cacheConfig.memoryMonitorInterval);
-    
-}).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        console.error(`端口 ${port} 已被占用，请尝试使用其他端口`);
-        console.error('你可以通过设置环境变量 PORT 来指定其他端口，例如：');
-        console.error('PORT=8080 npm start');
-    } else {
-        console.error('启动服务器时发生错误:', err);
-    }
-    process.exit(1);
-});
+    return server;
+}
 
-// 优雅关闭
-process.on('SIGTERM', () => {
-    console.log('收到 SIGTERM 信号，正在关闭服务器...');
-    server.close(() => {
-        console.log('服务器已关闭');
-        process.exit(0);
+function stopServer() {
+    stopAllScheduledCollections();
+    clearInterval(memoryMonitorTimer);
+    memoryMonitorTimer = null;
+    if (!server) return Promise.resolve();
+    return new Promise(resolve => {
+        server.close(() => {
+            server = null;
+            resolve();
+        });
     });
-}); 
+}
+
+if (require.main === module) {
+    startServer();
+    const shutdown = signal => {
+        console.log(`收到 ${signal} 信号，正在关闭服务器...`);
+        stopServer().then(() => process.exit(0));
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+module.exports = {
+    app,
+    CacheManager,
+    cacheManager,
+    filterStatsByTime,
+    formatStatsOutput,
+    isValidInterfaceName,
+    normalizeStatsLines,
+    normalizeValue,
+    parseInterfaceList,
+    parseIsoDate,
+    startServer,
+    stopServer,
+    translateOutput
+};

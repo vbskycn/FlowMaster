@@ -1,259 +1,214 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# vnstat数据备份和还原脚本 - 简化版
-# 使用方法: sudo ./backup_vnstat_simple.sh
+set -Eeuo pipefail
 
-set -e
+readonly BACKUP_DIR="${FLOWMASTER_BACKUP_DIR:-/var/backups/flowmaster/vnstat}"
+readonly VNSTAT_DATA_DIR="${VNSTAT_DATA_DIR:-/var/lib/vnstat}"
+readonly LOG_FILE="${FLOWMASTER_BACKUP_LOG:-/var/log/flowmaster-vnstat-backup.log}"
 
-# 定义颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 配置
-BACKUP_BASE_DIR="/backup/vnstat"
-VNSTAT_DATA_DIR="/var/lib/vnstat"
-LOG_FILE="/var/log/vnstat-backup.log"
+VNSTAT_WAS_ACTIVE=false
+FLOWMASTER_WAS_ACTIVE=false
+SERVICES_STOPPED=false
 
-# 检查是否为root用户
-if [ "$EUID" -ne 0 ]; then 
-    echo -e "${RED}请使用 root 权限运行此脚本${NC}"
-    exit 1
-fi
+log() { echo -e "${GREEN}$*${NC}"; }
+warn() { echo -e "${YELLOW}$*${NC}"; }
+fail() { echo -e "${RED}$*${NC}" >&2; return 1; }
 
-# 显示菜单
-show_menu() {
-    clear
-    echo -e "${GREEN}================================${NC}"
-    echo -e "${GREEN}    vnstat 数据管理工具${NC}"
-    echo -e "${GREEN}================================${NC}"
-    echo -e "1) 备份 vnstat 数据"
-    echo -e "2) 还原 vnstat 数据"
-    echo -e "3) 列出所有备份"
-    echo -e "4) 退出"
-    echo
-    echo -e "请选择操作 [1-4]: \c"
+require_root() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo -e "${RED}请使用 root 权限运行此脚本${NC}" >&2; exit 1; }
 }
 
-# 停止相关服务
+validate_paths() {
+    local resolved_data_dir
+    resolved_data_dir="$(realpath -m -- "$VNSTAT_DATA_DIR")"
+    [[ "$resolved_data_dir" == /* ]] || { fail "vnstat 数据目录必须是绝对路径"; return 1; }
+    case "$resolved_data_dir" in
+        /|/var|/var/lib|/tmp|/opt|/root|/home) fail "拒绝对过宽目录执行数据操作: $resolved_data_dir"; return 1 ;;
+    esac
+    (( ${#resolved_data_dir} >= 12 )) || { fail "vnstat 数据目录过短，拒绝执行: $resolved_data_dir"; return 1; }
+}
+
+record_log() {
+    mkdir -p "$(dirname "$LOG_FILE")"
+    printf '%s %s\n' "$(date --iso-8601=seconds)" "$*" >>"$LOG_FILE"
+}
+
 stop_services() {
-    echo -e "${YELLOW}正在停止相关服务...${NC}"
-    
-    # 停止 FlowMaster
-    if command -v pm2 &> /dev/null; then
-        pm2 stop flowmaster 2>/dev/null || true
-        echo "已停止 FlowMaster 服务"
+    [[ "$SERVICES_STOPPED" == false ]] || return 0
+    if systemctl is-active --quiet vnstat 2>/dev/null; then
+        VNSTAT_WAS_ACTIVE=true
     fi
-    
-    # 停止 vnstat 服务
-    systemctl stop vnstat 2>/dev/null || service vnstat stop 2>/dev/null || true
-    echo "已停止 vnstat 服务"
+    if command -v pm2 >/dev/null 2>&1; then
+        local pid
+        pid="$(pm2 pid flowmaster 2>/dev/null || true)"
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && FLOWMASTER_WAS_ACTIVE=true
+    fi
+
+    [[ "$FLOWMASTER_WAS_ACTIVE" == true ]] && pm2 stop flowmaster >/dev/null
+    [[ "$VNSTAT_WAS_ACTIVE" == true ]] && systemctl stop vnstat
+    SERVICES_STOPPED=true
 }
 
-# 启动相关服务
-start_services() {
-    echo -e "${YELLOW}正在启动相关服务...${NC}"
-    
-    # 启动 vnstat 服务
-    systemctl start vnstat 2>/dev/null || service vnstat start 2>/dev/null || true
-    echo "已启动 vnstat 服务"
-    
-    # 启动 FlowMaster
-    if command -v pm2 &> /dev/null; then
-        pm2 start flowmaster 2>/dev/null || true
-        pm2 save 2>/dev/null || true
-        echo "已启动 FlowMaster 服务"
+restore_services() {
+    [[ "$SERVICES_STOPPED" == true ]] || return 0
+    if [[ "$VNSTAT_WAS_ACTIVE" == true ]]; then
+        systemctl start vnstat || true
     fi
+    if [[ "$FLOWMASTER_WAS_ACTIVE" == true ]]; then
+        pm2 start flowmaster >/dev/null || true
+    fi
+    SERVICES_STOPPED=false
+}
+trap restore_services EXIT
+
+create_archive() {
+    local archive="$1"
+    local temporary_dir
+    temporary_dir="$(mktemp -d "$BACKUP_DIR/.snapshot.XXXXXX")"
+    mkdir -p "$temporary_dir/data"
+
+    cp -a "$VNSTAT_DATA_DIR/." "$temporary_dir/data/"
+    vnstat --json >"$temporary_dir/vnstat.json" 2>/dev/null || true
+    {
+        printf 'created_at=%s\n' "$(date --iso-8601=seconds)"
+        printf 'hostname=%s\n' "$(hostname)"
+        printf 'vnstat_version=%s\n' "$(vnstat --version 2>/dev/null | head -n 1 || echo unknown)"
+    } >"$temporary_dir/metadata.txt"
+    (
+        cd "$temporary_dir"
+        find data -type f -print0 | sort -z | xargs -0 -r sha256sum >checksums.sha256
+        tar -czf "${archive}.tmp" data metadata.txt vnstat.json checksums.sha256
+    )
+    mv "${archive}.tmp" "$archive"
+    rm -rf -- "$temporary_dir"
+    tar -tzf "$archive" >/dev/null
 }
 
-# 备份函数
 backup_data() {
-    local backup_dir="$BACKUP_BASE_DIR-$(date +%Y%m%d-%H%M%S)"
-    
-    echo -e "${GREEN}开始备份vnstat数据...${NC}"
-    echo "$(date): 开始备份vnstat数据..." | tee -a $LOG_FILE
-    mkdir -p $backup_dir
+    [[ -d "$VNSTAT_DATA_DIR" ]] || { fail "vnstat 数据目录不存在: $VNSTAT_DATA_DIR"; return 1; }
+    mkdir -p "$BACKUP_DIR"
+    local archive
+    archive="$BACKUP_DIR/vnstat-$(date +%Y%m%d-%H%M%S).tar.gz"
 
-    # 检查vnstat数据目录是否存在
-    if [ ! -d "$VNSTAT_DATA_DIR" ]; then
-        echo -e "${RED}错误: vnstat数据目录不存在: $VNSTAT_DATA_DIR${NC}"
-        echo "$(date): 错误: vnstat数据目录不存在: $VNSTAT_DATA_DIR" | tee -a $LOG_FILE
-        return 1
-    fi
-
-    # 备份数据库文件
-    echo -e "${YELLOW}备份数据库文件...${NC}"
-    echo "$(date): 备份数据库文件..." | tee -a $LOG_FILE
-    cp -r $VNSTAT_DATA_DIR/* $backup_dir/
-
-    # 导出文本格式数据
-    echo -e "${YELLOW}导出文本格式数据...${NC}"
-    echo "$(date): 导出文本格式数据..." | tee -a $LOG_FILE
-    vnstat --dumpdb > $backup_dir/vnstat-dump.txt 2>/dev/null || echo "无法导出文本格式数据"
-
-    # 显示备份信息
-    echo -e "${GREEN}备份完成!${NC}"
-    echo "$(date): 备份完成!" | tee -a $LOG_FILE
-    echo -e "${BLUE}备份目录: $backup_dir${NC}"
-    echo "备份文件:"
-    ls -la $backup_dir | tee -a $LOG_FILE
-
-    # 显示备份大小
-    BACKUP_SIZE=$(du -sh $backup_dir | cut -f1)
-    echo -e "${BLUE}备份大小: $BACKUP_SIZE${NC}"
-
-    echo "$(date): 备份完成，备份位置: $backup_dir" | tee -a $LOG_FILE
-}
-
-# 还原函数
-restore_data() {
-    echo -e "${GREEN}可用的备份列表:${NC}"
-    
-    # 列出所有备份目录
-    local backup_parent_dir="/backup"
-    if [ ! -d "$backup_parent_dir" ]; then
-        echo -e "${RED}没有找到备份目录: $backup_parent_dir${NC}"
-        return 1
-    fi
-    
-    local backups=($(ls -1td $backup_parent_dir/vnstat-* 2>/dev/null | head -10))
-    
-    if [ ${#backups[@]} -eq 0 ]; then
-        echo -e "${RED}没有找到任何备份${NC}"
-        return 1
-    fi
-    
-    echo -e "${BLUE}最近的备份:${NC}"
-    for i in "${!backups[@]}"; do
-        local backup_name=$(basename ${backups[$i]})
-        local backup_time=$(echo $backup_name | sed 's/.*-\([0-9]\{8\}-[0-9]\{6\}\)/\1/')
-        local backup_size=$(du -sh ${backups[$i]} | cut -f1)
-        echo -e "$((i+1))) $backup_name (大小: $backup_size, 时间: $backup_time)"
-    done
-    
-    echo
-    echo -e "请选择要还原的备份 [1-${#backups[@]}]: \c"
-    read choice
-    
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#backups[@]} ]; then
-        echo -e "${RED}无效的选择${NC}"
-        return 1
-    fi
-    
-    local selected_backup=${backups[$((choice-1))]}
-    
-    echo -e "${YELLOW}确认要还原备份: $(basename $selected_backup) ? [y/N]: \c"
-    read confirm
-    
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}取消还原操作${NC}"
-        return 0
-    fi
-    
-    # 停止服务
+    log "正在创建一致性备份..."
     stop_services
-    
-    # 备份当前数据
-    if [ -d "$VNSTAT_DATA_DIR" ]; then
-        local current_backup="/var/lib/vnstat.backup.$(date +%Y%m%d-%H%M%S)"
-        echo -e "${YELLOW}备份当前数据到: $current_backup${NC}"
-        mv $VNSTAT_DATA_DIR $current_backup
-    fi
-    
-    # 恢复数据
-    echo -e "${YELLOW}正在恢复数据...${NC}"
-    mkdir -p $VNSTAT_DATA_DIR
-    cp -r $selected_backup/* $VNSTAT_DATA_DIR/
-    
-    # 设置正确的权限
-    chown -R vnstat:vnstat $VNSTAT_DATA_DIR 2>/dev/null || chown -R root:root $VNSTAT_DATA_DIR
-    chmod -R 755 $VNSTAT_DATA_DIR
-    
-    # 启动服务
-    start_services
-    
-    echo -e "${GREEN}数据恢复完成!${NC}"
-    echo "$(date): 数据恢复完成，使用备份: $selected_backup" | tee -a $LOG_FILE
-    
-    # 验证数据
-    echo -e "${BLUE}验证数据:${NC}"
-    echo "检查vnstat数据库文件:"
-    ls -la $VNSTAT_DATA_DIR/
-    echo
-    echo "检查vnstat服务状态:"
-    systemctl status vnstat --no-pager -l
-    echo
-    echo "检查可用的网络接口:"
-    vnstat --iflist 2>/dev/null || echo "无法获取网络接口列表"
+    create_archive "$archive"
+    restore_services
+
+    local archive_hash
+    archive_hash="$(sha256sum "$archive" | awk '{print $1}')"
+    printf '%s  %s\n' "$archive_hash" "$(basename "$archive")" >"${archive}.sha256"
+    record_log "backup_created archive=$archive sha256=$archive_hash"
+    log "备份完成: $archive"
+    echo -e "${BLUE}SHA-256: $archive_hash${NC}"
 }
 
-# 列出所有备份
+list_archive_paths() {
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'vnstat-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-
+}
+
 list_backups() {
-    echo -e "${GREEN}所有备份列表:${NC}"
-    
-    local backup_parent_dir="/backup"
-    if [ ! -d "$backup_parent_dir" ]; then
-        echo -e "${RED}没有找到备份目录: $backup_parent_dir${NC}"
-        return 1
-    fi
-    
-    local backups=($(ls -1td $backup_parent_dir/vnstat-* 2>/dev/null))
-    
-    if [ ${#backups[@]} -eq 0 ]; then
-        echo -e "${RED}没有找到任何备份${NC}"
-        return 1
-    fi
-    
-    echo -e "${BLUE}备份列表 (按时间倒序):${NC}"
-    printf "%-4s %-30s %-10s %-20s\n" "序号" "备份名称" "大小" "修改时间"
-    echo "----------------------------------------------------------------"
-    
-    for i in "${!backups[@]}"; do
-        local backup_name=$(basename ${backups[$i]})
-        local backup_size=$(du -sh ${backups[$i]} | cut -f1)
-        local backup_time=$(stat -c %y ${backups[$i]} | cut -d' ' -f1,2 | cut -d'.' -f1)
-        printf "%-4s %-30s %-10s %-20s\n" "$((i+1))" "$backup_name" "$backup_size" "$backup_time"
-    done
+    mkdir -p "$BACKUP_DIR"
+    local index=0
+    while IFS= read -r archive; do
+        [[ -n "$archive" ]] || continue
+        index=$((index + 1))
+        printf '%-4s %-38s %-10s %s\n' "$index" "$(basename "$archive")" "$(du -h "$archive" | cut -f1)" "$(stat -c '%y' "$archive" | cut -d'.' -f1)"
+    done < <(list_archive_paths)
+    (( index > 0 )) || warn "没有找到备份"
 }
 
-# 主程序
+restore_data() {
+    mkdir -p "$BACKUP_DIR"
+    mapfile -t backups < <(list_archive_paths)
+    (( ${#backups[@]} > 0 )) || { fail "没有找到可恢复的备份"; return 1; }
+
+    list_backups
+    local choice confirmation
+    read -r -p "请选择备份 [1-${#backups[@]}]: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#backups[@]} )); then
+        fail "无效选择"
+        return 1
+    fi
+    local selected="${backups[$((choice - 1))]}"
+    read -r -p "确认恢复 $(basename "$selected")？当前数据会先安全归档 [y/N]: " confirmation
+    [[ "$confirmation" =~ ^[Yy]$ ]] || { warn "已取消"; return 0; }
+
+    if [[ -f "${selected}.sha256" ]]; then
+        (cd "$BACKUP_DIR" && sha256sum --check --status "$(basename "${selected}.sha256")") || { fail "备份归档校验失败"; return 1; }
+    fi
+
+    local extracted rollback_dir
+    extracted="$(mktemp -d "$BACKUP_DIR/.restore.XXXXXX")"
+    tar -xzf "$selected" -C "$extracted"
+    (
+        cd "$extracted"
+        sha256sum --check --status checksums.sha256
+    ) || { rm -rf -- "$extracted"; fail "备份内部文件校验失败"; return 1; }
+
+    stop_services
+    rollback_dir="${VNSTAT_DATA_DIR}.rollback.$(date +%Y%m%d-%H%M%S)"
+    if [[ -d "$VNSTAT_DATA_DIR" ]]; then
+        mv "$VNSTAT_DATA_DIR" "$rollback_dir"
+    fi
+    mkdir -p "$VNSTAT_DATA_DIR"
+
+    if ! cp -a "$extracted/data/." "$VNSTAT_DATA_DIR/"; then
+        rm -rf -- "$VNSTAT_DATA_DIR"
+        [[ -d "$rollback_dir" ]] && mv "$rollback_dir" "$VNSTAT_DATA_DIR"
+        rm -rf -- "$extracted"
+        restore_services
+        fail "复制恢复数据失败，已回滚"
+        return 1
+    fi
+    rm -rf -- "$extracted"
+    restore_services
+
+    if ! vnstat --iflist >/dev/null 2>&1; then
+        stop_services
+        rm -rf -- "$VNSTAT_DATA_DIR"
+        [[ -d "$rollback_dir" ]] && mv "$rollback_dir" "$VNSTAT_DATA_DIR"
+        restore_services
+        fail "恢复后 vnstat 验证失败，已回滚"
+        return 1
+    fi
+
+    record_log "backup_restored archive=$selected rollback=$rollback_dir"
+    log "恢复完成；恢复前数据保留在: $rollback_dir"
+}
+
+show_menu() {
+    echo -e "${GREEN}================================${NC}"
+    echo -e "${GREEN}      vnstat 数据管理工具${NC}"
+    echo -e "${GREEN}================================${NC}"
+    echo "1) 创建一致性备份"
+    echo "2) 校验并恢复备份"
+    echo "3) 列出备份"
+    echo "4) 退出"
+}
+
 main() {
+    require_root
+    validate_paths
     while true; do
         show_menu
-        read choice
-        
-        case $choice in
-            1)
-                backup_data
-                echo
-                echo -e "${GREEN}按任意键继续...${NC}"
-                read -n 1 -r
-                ;;
-            2)
-                restore_data
-                echo
-                echo -e "${GREEN}按任意键继续...${NC}"
-                read -n 1 -r
-                ;;
-            3)
-                list_backups
-                echo
-                echo -e "${GREEN}按任意键继续...${NC}"
-                read -n 1 -r
-                ;;
-            4)
-                echo -e "${GREEN}退出程序${NC}"
-                exit 0
-                ;;
-            *)
-                echo -e "${RED}无效的选择，请重新选择${NC}"
-                sleep 2
-                ;;
+        local choice
+        read -r -p "请选择操作 [1-4]: " choice
+        case "$choice" in
+            1) backup_data ;;
+            2) restore_data ;;
+            3) list_backups ;;
+            4) exit 0 ;;
+            *) warn "无效选择" ;;
         esac
+        echo
     done
 }
 
-# 执行主程序
-main
+main "$@"

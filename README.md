@@ -1,9 +1,9 @@
 # FlowMaster - 专业的网络流量实时监控系统
 
-[![Version](https://img.shields.io/badge/version-1.1.7-blue.svg)](https://github.com/vbskycn/FlowMaster)
+[![Version](https://img.shields.io/badge/version-1.1.17-blue.svg)](https://github.com/vbskycn/FlowMaster)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/node.js-14.0.0+-green.svg)](https://nodejs.org/)
-[![Vue.js](https://img.shields.io/badge/vue.js-3.2.31+-green.svg)](https://vuejs.org/)
+[![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
+[![Vue.js](https://img.shields.io/badge/vue.js-3.5.20-green.svg)](https://vuejs.org/)
 
 ![FlowMaster](assets/FlowMaster.jpg)
 
@@ -85,7 +85,7 @@ FlowMaster 是一个基于 **vnstat** 的专业网络流量监控系统，采用
 ### 后端技术栈
 | 组件 | 技术 | 版本 | 说明 |
 |------|------|------|------|
-| **运行时** | Node.js | 14.0.0+ | JavaScript运行时环境 |
+| **运行时** | Node.js | 18.0.0+ | JavaScript运行时环境 |
 | **Web框架** | Express.js | 4.18.2+ | 轻量级Web应用框架 |
 | **跨域处理** | CORS | 2.8.5+ | 跨域资源共享 |
 | **进程管理** | PM2 | 最新 | 生产环境进程管理器 |
@@ -94,10 +94,10 @@ FlowMaster 是一个基于 **vnstat** 的专业网络流量监控系统，采用
 ### 前端技术栈
 | 组件 | 技术 | 版本 | 说明 |
 |------|------|------|------|
-| **框架** | Vue.js | 3.2.31+ | 渐进式JavaScript框架 |
-| **UI框架** | Bootstrap | 5.1.3+ | 响应式CSS框架 |
-| **图表库** | Chart.js | 4.4.1+ | 交互式图表库 |
-| **HTTP客户端** | Axios | 0.26.0+ | Promise-based HTTP客户端 |
+| **框架** | Vue.js | 3.5.20 | 渐进式JavaScript框架，本地加载 |
+| **UI框架** | Bootstrap | 5.3.8 | 响应式CSS框架，本地加载 |
+| **图表库** | Chart.js | 4.5.0 | 交互式图表库，本地加载 |
+| **HTTP客户端** | Axios | 1.20.0 | Promise-based HTTP客户端，本地加载 |
 | **图标库** | Bootstrap Icons | 1.8.0+ | 图标字体库 |
 
 ### 系统架构
@@ -120,7 +120,7 @@ FlowMaster 是一个基于 **vnstat** 的专业网络流量监控系统，采用
 
 | 组件 | 最低版本 | 推荐版本 | 说明 |
 |------|----------|----------|------|
-| **Node.js** | 14.0.0 | 18.0.0+ | JavaScript运行时 |
+| **Node.js** | 18.0.0 | 22.0.0+ | JavaScript运行时 |
 | **vnstat** | 2.0.0 | 2.10+ | 网络监控工具 |
 | **npm** | 6.0.0 | 8.0.0+ | 包管理器 |
 | **操作系统** | Linux | Ubuntu 20.04+ | 支持vnstat的系统 |
@@ -155,24 +155,33 @@ flowmaster status
 # 查看日志
 flowmaster logs
 
-# 卸载服务
-flowmaster uninstall
+# 卸载服务（在安装脚本菜单选择卸载）
+sudo ./install.sh
 ```
+
+卸载只归档 FlowMaster 程序文件，不会删除 `/var/lib/vnstat`。如需备份或恢复流量历史数据：
+
+```bash
+sudo ./backup_vnstat.sh
+```
+
+备份默认保存在 `/var/backups/flowmaster/vnstat`，包含文件校验和、vnstat 导出和环境元数据。恢复前会再次校验，并将当前数据保留为带时间戳的回滚目录。
 
 ### 🌐 访问系统
 
 安装完成后，通过浏览器访问：`http://服务器IP:10089`
 
-> ⚠️ **注意**: 请确保防火墙已放行 10089 端口
+> ⚠️ **注意**: 公网部署应通过 HTTPS 反向代理访问，并限制 10089 端口来源；需要管理接口保护时请设置 `ADMIN_TOKEN`。
 
 ## 🔧 配置说明
 
 ### 环境变量配置
 
-创建 `.env` 文件或设置环境变量：
+复制 `.env.example` 为 `.env`，或直接设置进程环境变量。服务会在启动时加载项目目录下的 `.env`：
 
 ```bash
 # 服务器配置
+HOST=0.0.0.0                       # 监听地址
 PORT=10089                          # 服务端口
 NODE_ENV=production                 # 运行环境
 
@@ -181,11 +190,17 @@ CACHE_MAX_SIZE=100                  # 最大缓存条目数
 CACHE_MAX_MEMORY_MB=50              # 最大缓存内存(MB)
 CACHE_CLEANUP_INTERVAL=60000        # 缓存清理间隔(ms)
 MEMORY_MONITOR_INTERVAL=300000      # 内存监控间隔(ms)
+
+# 安全配置
+CORS_ORIGINS=                       # 逗号分隔的跨域来源，留空表示不开放跨域
+ADMIN_TOKEN=                        # 可选；保护缓存清理和vnstat诊断接口
+RATE_LIMIT_MAX=180                  # 每个客户端每分钟API请求上限
+TRUST_PROXY=false                   # 仅在可信反向代理后启用
 ```
 
 ### PM2 配置
 
-创建 `ecosystem.config.js` 文件：
+仓库已经提供 `ecosystem.config.js`，默认启用自动重启、内存上限和优雅关闭：
 
 ```javascript
 module.exports = {
@@ -195,9 +210,10 @@ module.exports = {
     instances: 1,
     autorestart: true,
     watch: false,
-    max_memory_restart: "1G",
+    max_memory_restart: "512M",
     env: {
       NODE_ENV: "production",
+      HOST: "0.0.0.0",
       PORT: 10089,
       CACHE_MAX_SIZE: 100,
       CACHE_MAX_MEMORY_MB: 50
@@ -247,15 +263,15 @@ pm2 startup
 git clone https://github.com/vbskycn/FlowMaster.git
 cd FlowMaster
 
-# 安装依赖
-npm install
+# 按锁文件安装依赖
+npm ci
 
 # 启动服务
 pm2 start ecosystem.config.js
 pm2 save
 
 # 调试启动
-npm install
+npm ci
 node server.js
 ```
 
@@ -302,7 +318,7 @@ curl -o install.sh https://raw.githubusercontent.com/vbskycn/FlowMaster/main/ins
 curl -o install.sh https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh && chmod +x install.sh && sudo ./install.sh
 ```
 
-- 运行后，脚本会弹出菜单，**请选择数字 3（更新 FlowMaster）**，即可自动拉取最新代码并重启服务。
+- 运行后，脚本会识别已有安装；请选择 **1（安全更新/重新部署）**。新版本会先安装依赖并完成冒烟测试，验证通过后才替换现有版本，失败时保留旧服务。
 - 如果你是在/root 目录安装的，也可以直接 `sudo ./install.sh`，然后选择 3更新。
 
 ##### 手动更新
@@ -416,7 +432,7 @@ GET /api/version
 **响应示例：**
 ```json
 {
-  "version": "1.1.7"
+  "version": "1.1.17"
 }
 ```
 
@@ -638,7 +654,7 @@ cd FlowMaster
 #### 2. 安装依赖
 
 ```bash
-npm install
+npm ci
 ```
 
 #### 3. 启动开发服务器
@@ -659,11 +675,18 @@ node server.js
 
 ```
 FlowMaster/
+├── .github/workflows/ci.yml # 持续集成
+├── AGENTS.md             # 开发协作与安全边界
+├── CHANGELOG.md          # 未发布及正式版本记录
 ├── server.js              # 主服务器文件
 ├── package.json           # 项目配置
+├── package-lock.json      # 可复现依赖锁
 ├── README.md             # 项目文档
 ├── .env.example          # 环境变量示例
 ├── install.sh            # 安装脚本
+├── backup_vnstat.sh      # vnstat备份恢复脚本
+├── scripts/              # 静态检查脚本
+├── test/                 # 自动化测试
 ├── public/               # 静态资源
 │   ├── index.html        # 主页面
 │   ├── css/              # 样式文件
@@ -684,15 +707,19 @@ FlowMaster/
 ### 测试
 
 ```bash
-# 运行API测试
-curl http://localhost:10089/api/version
+# 安装锁定依赖并执行语法检查、单元测试和API测试
+npm ci
+npm run test:ci
 
-# 测试vnstat
-curl http://localhost:10089/api/test/vnstat
+# 检查生产依赖安全公告
+npm audit --omit=dev --audit-level=high
 
-# 检查系统状态
-curl http://localhost:10089/api/system/status
+# Linux安装与备份脚本语法
+bash -n install.sh
+bash -n backup_vnstat.sh
 ```
+
+真实 vnstat 联调仍需在 Linux 主机执行，并验证接口发现、实时采样、周期统计、日期查询和优雅关闭。
 
 ## 🤝 贡献指南
 
