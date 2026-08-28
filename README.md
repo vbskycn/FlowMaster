@@ -1,6 +1,6 @@
 # FlowMaster - 专业的网络流量实时监控系统
 
-[![Version](https://img.shields.io/badge/version-1.1.18-blue.svg)](https://github.com/vbskycn/FlowMaster)
+[![Version](https://img.shields.io/badge/version-1.1.19-blue.svg)](https://github.com/vbskycn/FlowMaster)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
 [![Vue.js](https://img.shields.io/badge/vue.js-3.5.42-green.svg)](https://vuejs.org/)
@@ -287,7 +287,9 @@ curl -o install.sh https://gh-proxy.com/https://raw.githubusercontent.com/vbskyc
 ```
 
 - 运行后，脚本会识别已有安装；请选择 **1（安全更新/重新部署）**。新版本会先安装依赖并完成冒烟测试，验证通过后才替换现有版本，失败时保留旧服务。
-- 安装器会拒绝在僵尸进程数量异常时继续，并把旧 PM2 中名为 `flowmaster` 的应用有界迁移到 systemd；不会重启或删除其他 PM2 应用。
+- PM2 健康时，安装器只删除名为 `flowmaster` 的旧应用并迁移到 systemd，不会重启或删除其他 PM2 应用。
+- 如果大量僵尸进程直接归属于无响应的 root PM2 daemon，安装器会先校验独立的 `pm2-*.service`、主备保存清单和 cgroup，再列出将短暂重启的已保存应用。输入完整的 `RECOVER-PM2` 后即可原地恢复，不需要重启服务器；恢复前备份写入 `/var/backups/flowmaster/pm2-recovery-*`。
+- 自动化部署只有显式设置 `FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1` 才允许重启 PM2 unit。PM2 未由独立 systemd unit 管理、保存清单不可信或有效停止边界被其他配置覆盖时，安装器会保持现状并安全退出，避免产生孤儿或重复应用。
 
 ##### 手动更新
 
@@ -388,7 +390,7 @@ GET /api/version
 **响应示例：**
 ```json
 {
-  "version": "1.1.18"
+  "version": "1.1.19"
 }
 ```
 
@@ -533,6 +535,28 @@ export CACHE_MAX_SIZE=50
 sudo systemctl restart flowmaster.service
 ```
 
+#### 5. 更新时 PM2 无响应并出现大量 `ps` 僵尸
+
+**症状**：安装停在旧 PM2 检查，`top` 显示 PM2 daemon 高 CPU，并出现大量状态为 `Z` 的 `ps` 进程。
+
+**处理方式**：重新运行最新版安装器。安装器确认僵尸进程直接属于 PM2 且能够安全定位独立的 root `pm2-*.service` 后，会显示已保存应用列表；核对无误后输入：
+
+```text
+RECOVER-PM2
+```
+
+这会短暂重启该 PM2 unit 管理的已保存应用，但不会重启整台服务器。恢复过程会验证新 daemon 的应用集合、运行状态和 `PIDUSAGE_USE_PS=false`，随后只把旧 FlowMaster 迁移到 `flowmaster.service`。
+
+如果安装器提示 PM2 不在独立的 systemd unit 中，它会拒绝直接杀死 daemon。可先查看其归属以便排查：
+
+```bash
+pm2_pid="$(sudo cat /root/.pm2/pm2.pid)"
+sudo systemctl status "$pm2_pid" --no-pager
+sudo cat "/proc/$pm2_pid/cgroup"
+```
+
+不要直接 `kill -9` PM2 daemon：Fork 应用可能成为孤儿，之后 `pm2 resurrect` 可能再启动一份重复实例。
+
 ### 日志分析
 
 查看详细日志信息：
@@ -664,8 +688,8 @@ FlowMaster/
 npm ci
 npm run test:ci
 
-# 检查生产依赖安全公告
-npm audit --omit=dev --audit-level=high
+# 检查全部依赖安全公告
+npm audit --audit-level=high
 
 # Linux安装与备份脚本语法
 bash -n install.sh
@@ -673,6 +697,9 @@ bash -n backup_vnstat.sh
 
 # Linux安装器超时、端口占用和进程回收回归
 bash test/install-linux.test.sh
+
+# Debian/systemd 真实 PM2 5.4.3 故障注入（需要 root 和网络）
+sudo bash test/pm2-recovery-systemd.test.sh
 ```
 
 真实 vnstat 联调仍需在 Linux 主机执行，并验证接口发现、实时采样、周期统计、日期查询和优雅关闭。

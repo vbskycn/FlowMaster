@@ -4,12 +4,18 @@ set -Eeuo pipefail
 
 TEST_ROOT="$(mktemp -d /tmp/flowmaster-install-test.XXXXXX)"
 readonly TEST_ROOT
+export FLOWMASTER_BACKUP_ROOT="$TEST_ROOT/backups"
 STALL_PID=""
+FAKE_PM2_PID=""
 
 test_cleanup() {
     if [[ -n "$STALL_PID" ]]; then
         kill -TERM -- "-$STALL_PID" >/dev/null 2>&1 || true
         wait "$STALL_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$FAKE_PM2_PID" ]]; then
+        kill "$FAKE_PM2_PID" >/dev/null 2>&1 || true
+        wait "$FAKE_PM2_PID" 2>/dev/null || true
     fi
     case "$TEST_ROOT" in
         /tmp/flowmaster-install-test.*) rm -rf -- "$TEST_ROOT" ;;
@@ -90,17 +96,79 @@ if (FLOWMASTER_MAX_ZOMBIES=2 check_process_health >/dev/null 2>&1); then
 fi
 unset -f ps
 
+# 高僵尸预检一旦进入 PM2 恢复流程，任何恢复或后置验证失败都必须阻断部署，
+# 不能因为 daemon 重启后僵尸数量下降而把失败吞成成功。
+precheck_pm2_home="$TEST_ROOT/precheck-pm2-home"
+mkdir -p "$precheck_pm2_home"
+printf '%s' "$$" >"$precheck_pm2_home/pm2.pid"
+if (
+    ps() {
+        case "$*" in
+            '-eo stat=') printf 'Z\nZ\n' ;;
+            '-eo ppid=,stat=') printf '%s Z\n%s Z\n' "$$" "$$" ;;
+            *) return 1 ;;
+        esac
+    }
+    is_root_pm2_daemon() { return 0; }
+    recover_unresponsive_pm2() { return 1; }
+    PM2_HOME="$precheck_pm2_home" FLOWMASTER_MAX_ZOMBIES=2 recover_pm2_before_health_check
+) >"$TEST_ROOT/precheck-recovery.log" 2>&1; then
+    echo "高僵尸预检不应吞掉 PM2 恢复失败" >&2
+    exit 1
+fi
+grep -q 'PM2 原地恢复未完整通过验证' "$TEST_ROOT/precheck-recovery.log"
+
+if (( EUID == 0 )); then
+    dump_home="$TEST_ROOT/dump-home"
+    dump_backup="$TEST_ROOT/dump-backup"
+    mkdir -m 0700 "$dump_home" "$dump_backup"
+    for dump_name in dump.pm2 dump.pm2.bak; do
+        cat >"$dump_home/$dump_name" <<'EOF'
+[
+  {"name":"flowmaster","status":"online"},
+  {"name":"flowmaster-worker","status":"online"},
+  {"name":"keeper-app","status":"online"}
+]
+EOF
+        chmod 0600 "$dump_home/$dump_name"
+    done
+    sanitize_saved_pm2_dumps "$dump_home" "$dump_backup"
+    for dump_name in dump.pm2 dump.pm2.bak; do
+        if pm2_dump_contains_app "$dump_home/$dump_name"; then
+            echo "PM2 主/备清单仍包含精确 FlowMaster" >&2
+            exit 1
+        fi
+        node -e "const fs=require('node:fs');const a=JSON.parse(fs.readFileSync(process.argv[1]));const n=a.map(x=>x.name).sort();if(JSON.stringify(n)!=='[\"flowmaster-worker\",\"keeper-app\"]')process.exit(1);" "$dump_home/$dump_name"
+        pm2_dump_contains_app "$dump_backup/$dump_name.before-flowmaster-removal"
+    done
+
+    unsafe_dump_home="$TEST_ROOT/unsafe-dump-home"
+    mkdir -m 0700 "$unsafe_dump_home"
+    cp -- "$dump_backup/dump.pm2.before-flowmaster-removal" "$unsafe_dump_home/dump.pm2"
+    ln -s "$unsafe_dump_home/dump.pm2" "$unsafe_dump_home/dump.pm2.bak"
+    if sanitize_saved_pm2_dumps "$unsafe_dump_home" "$TEST_ROOT/unsafe-dump-backup" >/dev/null 2>&1; then
+        echo "PM2 符号链接清单不应通过校验" >&2
+        exit 1
+    fi
+    pm2_dump_contains_app "$unsafe_dump_home/dump.pm2"
+fi
+
 fake_bin="$TEST_ROOT/fake-bin"
 fake_pm2_home="$TEST_ROOT/pm2-home"
 mkdir -p "$fake_bin" "$fake_pm2_home"
-printf '%s\n' "$$" >"$fake_pm2_home/pm2.pid"
+bash -c 'exec -a "PM2 v5.4.3: God Daemon (test)" sleep 60' &
+FAKE_PM2_PID=$!
+printf '%s' "$FAKE_PM2_PID" >"$fake_pm2_home/pm2.pid"
 cat >"$fake_bin/pm2" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${PM2_TEST_MODE:-healthy}" == "hang" && "${1:-}" == "describe" ]]; then
+if [[ "${PM2_TEST_MODE:-healthy}" == "hang" && "${1:-}" == "jlist" ]]; then
     sleep 30
 fi
 printf '%s\n' "${1:-}" >>"${PM2_TEST_LOG:?}"
+if [[ "${1:-}" == "jlist" ]]; then
+    printf '[{"name":"flowmaster","pid":123,"pm2_env":{"name":"flowmaster","status":"online"}}]\n'
+fi
 EOF
 chmod +x "$fake_bin/pm2"
 original_path="$PATH"
@@ -108,7 +176,7 @@ export PATH="$fake_bin:$PATH"
 export PM2_HOME="$fake_pm2_home"
 export PM2_TEST_LOG="$TEST_ROOT/pm2.log"
 retire_legacy_pm2_app
-grep -qx 'describe' "$PM2_TEST_LOG"
+grep -qx 'jlist' "$PM2_TEST_LOG"
 grep -qx 'delete' "$PM2_TEST_LOG"
 grep -qx 'save' "$PM2_TEST_LOG"
 
@@ -120,6 +188,23 @@ if retire_legacy_pm2_app >/dev/null 2>&1; then
 fi
 elapsed=$((SECONDS - started_at))
 (( elapsed >= 5 && elapsed <= 7 )) || { echo "PM2 超时未受控: ${elapsed}s" >&2; exit 1; }
+
+# jlist 在删除前超时时，恢复必须要求保存清单包含 FlowMaster，不能把尚未
+# 保存的旧服务静默丢失。函数覆盖仅存在于子 Shell，不影响其他测试。
+recovery_argument_log="$TEST_ROOT/recovery-argument.log"
+(
+    get_pm2_app_presence() { return 124; }
+    recover_unresponsive_pm2() {
+        printf '%s\n' "${1:-}" >"$recovery_argument_log"
+        return 1
+    }
+    if retire_legacy_pm2_app >/dev/null 2>&1; then
+        echo "删除前 jlist 超时不应被视为迁移成功" >&2
+        exit 1
+    fi
+)
+grep -qx '1' "$recovery_argument_log"
+
 export PATH="$original_path"
 unset PM2_HOME PM2_TEST_LOG PM2_TEST_MODE
 

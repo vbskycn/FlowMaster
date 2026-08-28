@@ -17,12 +17,13 @@
 
 - Node.js 最低版本为 18，依赖使用已提交的 `package-lock.json` 和 `npm ci`。
 - 提交前至少运行 `npm run test:ci`、`bash -n install.sh`、`bash -n backup_vnstat.sh`、`bash test/install-linux.test.sh` 和 `npm audit --audit-level=high`。
+- 修改 PM2 恢复流程时，还必须在真实 Debian/systemd 环境以 root 运行 `bash test/pm2-recovery-systemd.test.sh`；该测试会安装隔离的 PM2 5.4.3 测试依赖并创建临时 unit，不得指向生产 PM2_HOME。
 - 修改 vnstat 解析、日期过滤、单位换算、缓存或接口参数时必须补回归测试。
 - Linux/vnstat 行为应在真实 Linux 环境验证；静态检查不能替代真实命令和 API 冒烟测试。
 
 ## 部署与安全
 
-- 一键部署使用 `flowmaster.service`，不得重新引入全局 PM2 作为默认进程管理器；旧 PM2 迁移必须有超时且只能修改名为 `flowmaster` 的应用。
+- 一键部署使用 `flowmaster.service`，不得重新引入全局 PM2 作为默认进程管理器；健康旧 PM2 的迁移必须有超时且只能修改名为 `flowmaster` 的应用。无响应 PM2 的恢复仅在明确确认后短暂重启经过强校验的独立 PM2 unit，并必须验证其他已保存应用的集合与状态不变。
 - 冒烟测试的网络请求和临时进程关闭必须有硬超时，脚本退出时必须回收整个临时进程组。
 - 生产环境优先通过 HTTPS 反向代理访问，只配置必要的 `CORS_ORIGINS`。
 - 公网部署应设置 `ADMIN_TOKEN`，并限制端口访问来源。
