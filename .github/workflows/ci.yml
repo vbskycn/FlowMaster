@@ -34,10 +34,13 @@ jobs:
         run: |
           bash -n install.sh
           bash -n backup_vnstat.sh
+          bash -n test/backup-vnstat-lifecycle.test.sh
           bash -n test/install-linux.test.sh
           bash -n test/pm2-recovery-systemd.test.sh
       - name: Test Linux installer safeguards
-        run: bash test/install-linux.test.sh
+        run: |
+          bash test/backup-vnstat-lifecycle.test.sh
+          bash test/install-linux.test.sh
       - name: Test
         run: npm run test:ci
       - name: Audit dependencies

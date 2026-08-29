@@ -41,29 +41,53 @@ record_log() {
 
 stop_services() {
     [[ "$SERVICES_STOPPED" == false ]] || return 0
+    VNSTAT_WAS_ACTIVE=false
+    FLOWMASTER_WAS_ACTIVE=false
     if systemctl is-active --quiet vnstat 2>/dev/null; then
         VNSTAT_WAS_ACTIVE=true
     fi
-    if command -v pm2 >/dev/null 2>&1; then
-        local pid
-        pid="$(pm2 pid flowmaster 2>/dev/null || true)"
-        [[ "$pid" =~ ^[1-9][0-9]*$ ]] && FLOWMASTER_WAS_ACTIVE=true
+    if systemctl is-active --quiet flowmaster.service 2>/dev/null; then
+        FLOWMASTER_WAS_ACTIVE=true
     fi
 
-    [[ "$FLOWMASTER_WAS_ACTIVE" == true ]] && pm2 stop flowmaster >/dev/null
-    [[ "$VNSTAT_WAS_ACTIVE" == true ]] && systemctl stop vnstat
+    # 先标记为已进入停服阶段，任何后续失败都由 EXIT trap 恢复原状态。
     SERVICES_STOPPED=true
+    local stop_failed=false
+    if [[ "$FLOWMASTER_WAS_ACTIVE" == true ]] && ! systemctl stop flowmaster.service; then
+        warn "停止 flowmaster.service 失败"
+        stop_failed=true
+    fi
+    if [[ "$stop_failed" == false && "$VNSTAT_WAS_ACTIVE" == true ]] && ! systemctl stop vnstat; then
+        warn "停止 vnstat 失败"
+        stop_failed=true
+    fi
+    if [[ "$stop_failed" == true ]]; then
+        if ! restore_services; then
+            warn "停服失败后未能完整恢复原服务状态，请立即检查 systemd"
+        fi
+        return 1
+    fi
+    return 0
 }
 
 restore_services() {
     [[ "$SERVICES_STOPPED" == true ]] || return 0
-    if [[ "$VNSTAT_WAS_ACTIVE" == true ]]; then
-        systemctl start vnstat || true
+    local restore_failed=false
+    if [[ "$VNSTAT_WAS_ACTIVE" == true ]] && ! systemctl start vnstat; then
+        warn "恢复 vnstat 失败"
+        restore_failed=true
     fi
     if [[ "$FLOWMASTER_WAS_ACTIVE" == true ]]; then
-        pm2 start flowmaster >/dev/null || true
+        if [[ "$restore_failed" == true ]]; then
+            warn "vnstat 未恢复，暂不启动 flowmaster.service"
+        elif ! systemctl start flowmaster.service; then
+            warn "恢复 flowmaster.service 失败"
+            restore_failed=true
+        fi
     fi
+    [[ "$restore_failed" == false ]] || return 1
     SERVICES_STOPPED=false
+    return 0
 }
 trap restore_services EXIT
 
@@ -99,7 +123,10 @@ backup_data() {
     log "正在创建一致性备份..."
     stop_services
     create_archive "$archive"
-    restore_services
+    if ! restore_services; then
+        fail "备份已生成，但未能完整恢复原服务状态"
+        return 1
+    fi
 
     local archive_hash
     archive_hash="$(sha256sum "$archive" | awk '{print $1}')"
@@ -163,19 +190,22 @@ restore_data() {
         rm -rf -- "$VNSTAT_DATA_DIR"
         [[ -d "$rollback_dir" ]] && mv "$rollback_dir" "$VNSTAT_DATA_DIR"
         rm -rf -- "$extracted"
-        restore_services
+        restore_services || warn "回滚数据后未能完整恢复原服务状态"
         fail "复制恢复数据失败，已回滚"
         return 1
     fi
-    rm -rf -- "$extracted"
-    restore_services
 
     if ! vnstat --iflist >/dev/null 2>&1; then
-        stop_services
         rm -rf -- "$VNSTAT_DATA_DIR"
         [[ -d "$rollback_dir" ]] && mv "$rollback_dir" "$VNSTAT_DATA_DIR"
-        restore_services
+        rm -rf -- "$extracted"
+        restore_services || warn "回滚数据后未能完整恢复原服务状态"
         fail "恢复后 vnstat 验证失败，已回滚"
+        return 1
+    fi
+    rm -rf -- "$extracted"
+    if ! restore_services; then
+        fail "数据已恢复并通过校验，但未能完整恢复原服务状态"
         return 1
     fi
 
@@ -211,4 +241,6 @@ main() {
     done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

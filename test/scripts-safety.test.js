@@ -54,6 +54,32 @@ test('备份脚本包含一致性、校验与恢复前回滚措施', () => {
     assert.match(source, /checksums\.sha256/);
     assert.match(source, /rollback/);
     assert.match(source, /trap restore_services EXIT/);
+    assert.match(source, /systemctl is-active --quiet flowmaster\.service/);
+    assert.match(source, /systemctl stop flowmaster\.service/);
+    assert.match(source, /systemctl start flowmaster\.service/);
+    assert.doesNotMatch(source, /\bpm2\b/);
+
+    const stopFlowMaster = source.indexOf('systemctl stop flowmaster.service');
+    const stopVnstat = source.indexOf('systemctl stop vnstat', stopFlowMaster);
+    const startVnstat = source.indexOf('systemctl start vnstat', stopVnstat);
+    const startFlowMaster = source.indexOf('systemctl start flowmaster.service', startVnstat);
+    assert.ok(
+        stopFlowMaster >= 0 &&
+        stopVnstat > stopFlowMaster &&
+        startVnstat > stopVnstat &&
+        startFlowMaster > startVnstat,
+        '备份恢复必须先停止读取服务和 vnstat，再按相反顺序恢复'
+    );
+
+    const restoreData = source.indexOf('restore_data()');
+    const validateRestoredData = source.indexOf('if ! vnstat --iflist', restoreData);
+    const resumeAfterValidation = source.indexOf('if ! restore_services', validateRestoredData);
+    assert.ok(
+        restoreData >= 0 &&
+        validateRestoredData > restoreData &&
+        resumeAfterValidation > validateRestoredData,
+        '恢复数据必须在重新启动 FlowMaster 前验证 vnstat 数据'
+    );
 });
 
 test('前端网络速率使用十进制 SI 换算', () => {
