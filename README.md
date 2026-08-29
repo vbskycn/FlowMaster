@@ -1,6 +1,6 @@
 # FlowMaster - 专业的网络流量实时监控系统
 
-[![Version](https://img.shields.io/badge/version-1.1.19-blue.svg)](https://github.com/vbskycn/FlowMaster)
+[![Version](https://img.shields.io/badge/version-1.1.20-blue.svg)](https://github.com/vbskycn/FlowMaster)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
 [![Vue.js](https://img.shields.io/badge/vue.js-3.5.42-green.svg)](https://vuejs.org/)
@@ -287,9 +287,9 @@ curl -o install.sh https://gh-proxy.com/https://raw.githubusercontent.com/vbskyc
 ```
 
 - 运行后，脚本会识别已有安装；请选择 **1（安全更新/重新部署）**。新版本会先安装依赖并完成冒烟测试，验证通过后才替换现有版本，失败时保留旧服务。
-- PM2 健康时，安装器只删除名为 `flowmaster` 的旧应用并迁移到 systemd，不会重启或删除其他 PM2 应用。
-- 如果大量僵尸进程直接归属于无响应的 root PM2 daemon，安装器会先校验独立的 `pm2-*.service`、主备保存清单和 cgroup，再列出将短暂重启的已保存应用。输入完整的 `RECOVER-PM2` 后即可原地恢复，不需要重启服务器；恢复前备份写入 `/var/backups/flowmaster/pm2-recovery-*`。
-- 自动化部署只有显式设置 `FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1` 才允许重启 PM2 unit。PM2 未由独立 systemd unit 管理、保存清单不可信或有效停止边界被其他配置覆盖时，安装器会保持现状并安全退出，避免产生孤儿或重复应用。
+- 如果旧 FlowMaster 仍由 PM2 管理，安装器会先校验独立的 `pm2-*.service`、主备保存清单和 cgroup，并列出需要恢复的其他已保存应用。输入完整的 `RECOVER-PM2` 后，安装器会有界停止该 PM2 unit、离线从主/备清单精确移除 `flowmaster`，再只恢复其他应用，不会调用 PM2 5.x 会递归执行 `ps` 的在线删除流程。
+- 如果 PM2 保存清单中只有 FlowMaster，迁移后 PM2 unit 会保持停止，由 `flowmaster.service` 接管；整个过程不需要重启服务器。恢复前备份写入 `/var/backups/flowmaster/pm2-recovery-*`。
+- 自动化部署只有显式设置 `FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1` 才允许短暂停止 PM2 unit 并按需恢复其他应用。PM2 未由独立 systemd unit 管理、保存清单不可信或有效停止边界被其他配置覆盖时，安装器会保持现状并安全退出，避免产生孤儿或重复应用。
 
 ##### 手动更新
 
@@ -390,7 +390,7 @@ GET /api/version
 **响应示例：**
 ```json
 {
-  "version": "1.1.19"
+  "version": "1.1.20"
 }
 ```
 
@@ -539,13 +539,13 @@ sudo systemctl restart flowmaster.service
 
 **症状**：安装停在旧 PM2 检查，`top` 显示 PM2 daemon 高 CPU，并出现大量状态为 `Z` 的 `ps` 进程。
 
-**处理方式**：重新运行最新版安装器。安装器确认僵尸进程直接属于 PM2 且能够安全定位独立的 root `pm2-*.service` 后，会显示已保存应用列表；核对无误后输入：
+**处理方式**：重新运行最新版安装器。安装器确认僵尸进程直接属于 PM2 且能够安全定位独立的 root `pm2-*.service` 后，会显示除旧 FlowMaster 外需要恢复的已保存应用；核对无误后输入：
 
 ```text
 RECOVER-PM2
 ```
 
-这会短暂重启该 PM2 unit 管理的已保存应用，但不会重启整台服务器。恢复过程会验证新 daemon 的应用集合、运行状态和 `PIDUSAGE_USE_PS=false`，随后只把旧 FlowMaster 迁移到 `flowmaster.service`。
+安装器会临时清空 unit 的 `ExecStop`，冻结旧 PM2 daemon，先给同一 cgroup 内的应用最多 5 秒正常退出，再由 systemd 直接终止剩余进程，避免 `pm2 kill/delete` 进入旧版 TreeKill 的递归 `ps` 路径。unit 完全停止后才会离线过滤 `dump.pm2` 和 `dump.pm2.bak`；如有其他保存应用，再启动 PM2 并验证应用集合、online/stopped 状态、daemon 归属和 `PIDUSAGE_USE_PS=false`。如果清单中只有 FlowMaster，则 PM2 保持停止，随后由 `flowmaster.service` 接管。
 
 如果安装器提示 PM2 不在独立的 systemd unit 中，它会拒绝直接杀死 daemon。可先查看其归属以便排查：
 

@@ -151,6 +151,23 @@ EOF
         exit 1
     fi
     pm2_dump_contains_app "$unsafe_dump_home/dump.pm2"
+
+    known_dropin="$TEST_ROOT/known-flowmaster-pm2-dropin.conf"
+    cat >"$known_dropin" <<'EOF'
+[Service]
+Environment=PIDUSAGE_USE_PS=false
+TimeoutStopSec=15s
+TimeoutStopFailureMode=kill
+KillMode=control-group
+SendSIGKILL=yes
+EOF
+    chmod 0600 "$known_dropin"
+    is_known_flowmaster_pm2_dropin "$known_dropin"
+    printf '\nRestart=always\n' >>"$known_dropin"
+    if is_known_flowmaster_pm2_dropin "$known_dropin"; then
+        echo "被修改的旧版 FlowMaster PM2 drop-in 不应通过精确识别" >&2
+        exit 1
+    fi
 fi
 
 fake_bin="$TEST_ROOT/fake-bin"
@@ -175,10 +192,15 @@ original_path="$PATH"
 export PATH="$fake_bin:$PATH"
 export PM2_HOME="$fake_pm2_home"
 export PM2_TEST_LOG="$TEST_ROOT/pm2.log"
-retire_legacy_pm2_app
+if retire_legacy_pm2_app >/dev/null 2>&1; then
+    echo "未受独立 systemd unit 管理的健康 PM2 不应被自动停止" >&2
+    exit 1
+fi
 grep -qx 'jlist' "$PM2_TEST_LOG"
-grep -qx 'delete' "$PM2_TEST_LOG"
-grep -qx 'save' "$PM2_TEST_LOG"
+if grep -Eq '^(delete|save|kill|stop)$' "$PM2_TEST_LOG"; then
+    echo "离线迁移不应调用 PM2 的删除、保存或停止 RPC" >&2
+    exit 1
+fi
 
 export PM2_TEST_MODE=hang
 started_at=$SECONDS
@@ -195,7 +217,7 @@ recovery_argument_log="$TEST_ROOT/recovery-argument.log"
 (
     get_pm2_app_presence() { return 124; }
     recover_unresponsive_pm2() {
-        printf '%s\n' "${1:-}" >"$recovery_argument_log"
+        printf '%s %s\n' "${1:-}" "${2:-}" >"$recovery_argument_log"
         return 1
     }
     if retire_legacy_pm2_app >/dev/null 2>&1; then
@@ -203,7 +225,22 @@ recovery_argument_log="$TEST_ROOT/recovery-argument.log"
         exit 1
     fi
 )
-grep -qx '1' "$recovery_argument_log"
+grep -qx '1 0' "$recovery_argument_log"
+
+# 健康 PM2 中发现旧 FlowMaster 时，也必须走同一条离线迁移路径；第二个参数
+# 只授权健康探测成功，不能退回在线 pm2 delete。
+(
+    get_pm2_app_presence() { printf 'present\n'; }
+    recover_unresponsive_pm2() {
+        printf '%s %s\n' "${1:-}" "${2:-}" >"$recovery_argument_log"
+        return 1
+    }
+    if retire_legacy_pm2_app >/dev/null 2>&1; then
+        echo "模拟的离线迁移失败不应被视为成功" >&2
+        exit 1
+    fi
+)
+grep -qx '1 1' "$recovery_argument_log"
 
 export PATH="$original_path"
 unset PM2_HOME PM2_TEST_LOG PM2_TEST_MODE

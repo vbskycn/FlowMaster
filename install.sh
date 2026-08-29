@@ -426,16 +426,29 @@ sanitize_saved_pm2_dumps() {
 
 print_pm2_recovery_apps() {
     local expected_dump="$1"
-    node - "$expected_dump" <<'NODE'
+    node - "$expected_dump" "$APP_NAME" <<'NODE'
 'use strict';
 const fs = require('node:fs');
 const apps = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const targetName = process.argv[3];
 const clean = value => String(value || '未命名').replace(/[\u0000-\u001f\u007f]/g, '?').slice(0, 120);
-for (const app of apps) {
-    if (app && app.pmx_module) continue;
-    console.log(`  - ${clean(app && app.name)} (${clean(app && app.status || '已保存')})`);
+const kept = apps.filter(app => {
+    const name = app && (app.name || (app.pm2_env && app.pm2_env.name));
+    return name !== targetName;
+});
+if (kept.length === 0) {
+    console.log('  - （无；PM2 unit 将保持停止）');
+}
+for (const app of kept) {
+    const env = app && (app.pm2_env || app);
+    console.log(`  - ${clean(env && env.name)} (${clean(env && env.status || '已保存')})`);
 }
 NODE
+}
+
+pm2_dump_has_entries() {
+    local dump_file="$1"
+    node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); if (!Array.isArray(value) || value.length === 0) process.exit(1);" "$dump_file"
 }
 
 verify_pm2_runtime() {
@@ -534,26 +547,139 @@ finalize_pm2_dump_migration() {
     }
 }
 
-restart_pm2_systemd_unit() {
+pm2_unit_cgroup_is_empty() {
+    local pm2_unit="$1"
+    local control_group cgroup_file cgroup_pid=""
+    control_group="$(systemctl show "$pm2_unit" --property=ControlGroup --value 2>/dev/null || true)"
+    [[ -z "$control_group" || "$control_group" == "/system.slice/${pm2_unit}" ]] || return 1
+    cgroup_file="/sys/fs/cgroup/system.slice/${pm2_unit}/cgroup.procs"
+    [[ ! -e "$cgroup_file" ]] && return 0
+    [[ -r "$cgroup_file" ]] || return 1
+    read -r cgroup_pid <"$cgroup_file" || true
+    [[ -z "$cgroup_pid" ]]
+}
+
+signal_pm2_cgroup_children() {
+    local pm2_unit="$1"
+    local pm2_pid="$2"
+    local signal_name="$3"
+    local cgroup_file="/sys/fs/cgroup/system.slice/${pm2_unit}/cgroup.procs"
+    local child_pid child_cgroup
+
+    [[ -r "$cgroup_file" ]] || return 1
+    while IFS= read -r child_pid; do
+        [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+        [[ "$child_pid" != "$pm2_pid" ]] || continue
+        [[ -r "/proc/${child_pid}/cgroup" ]] || continue
+        child_cgroup="$(sed -n 's/^0:://p' "/proc/${child_pid}/cgroup" 2>/dev/null | tail -n 1)"
+        [[ "$child_cgroup" == "/system.slice/${pm2_unit}" ]] || return 1
+        kill -s "$signal_name" "$child_pid" >/dev/null 2>&1 || true
+    done <"$cgroup_file"
+}
+
+pm2_cgroup_has_children() {
+    local pm2_unit="$1"
+    local pm2_pid="$2"
+    local cgroup_file="/sys/fs/cgroup/system.slice/${pm2_unit}/cgroup.procs"
+    local child_pid
+
+    [[ -r "$cgroup_file" ]] || return 1
+    while IFS= read -r child_pid; do
+        [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || return 0
+        [[ "$child_pid" == "$pm2_pid" ]] || return 0
+    done <"$cgroup_file"
+    return 1
+}
+
+stop_pm2_systemd_unit() (
     local pm2_unit="$1"
     local pm2_pid="$2"
     local pm2_starttime="$3"
-    local pm2_home="$4"
-    local deadline=$((SECONDS + 45))
-    local main_pid control_pid active_state new_starttime
+    local grace_deadline deadline
+    local main_pid control_pid active_state
+    local daemon_needs_resume=0
+
+    # 该函数仅由局部 signal/EXIT trap 间接调用。
+    # shellcheck disable=SC2317
+    resume_frozen_pm2() {
+        if (( daemon_needs_resume == 1 )) && process_matches_starttime "$pm2_pid" "$pm2_starttime"; then
+            kill -CONT "$pm2_pid" >/dev/null 2>&1 || true
+        fi
+    }
+    trap resume_frozen_pm2 EXIT
+    trap 'resume_frozen_pm2; exit 130' INT TERM HUP
 
     process_matches_starttime "$pm2_pid" "$pm2_starttime" || return 1
-    systemctl --no-block restart "$pm2_unit" >/dev/null 2>&1 || return 1
+    main_pid="$(systemctl show "$pm2_unit" --property=MainPID --value 2>/dev/null || true)"
+    control_pid="$(systemctl show "$pm2_unit" --property=ControlPID --value 2>/dev/null || true)"
+    active_state="$(systemctl show "$pm2_unit" --property=ActiveState --value 2>/dev/null || true)"
+    [[ "$active_state" == "active" && "$main_pid" == "$pm2_pid" && "$control_pid" == "0" ]] || return 1
+    # PM2 5.x 捕获 SIGINT/SIGTERM 后会逐个 delete 应用并进入递归 TreeKill。
+    # 先冻结 daemon，单独给同一 cgroup 的应用一个短暂退出窗口，再由
+    # systemd 直接 KILL 剩余 cgroup，避免重新制造 ps 僵尸风暴。
+    kill -STOP "$pm2_pid" >/dev/null 2>&1 || return 1
+    daemon_needs_resume=1
+    if ! process_matches_starttime "$pm2_pid" "$pm2_starttime"; then
+        return 1
+    fi
+    signal_pm2_cgroup_children "$pm2_unit" "$pm2_pid" TERM || return 1
+    grace_deadline=$((SECONDS + 5))
+    while (( SECONDS < grace_deadline )); do
+        pm2_cgroup_has_children "$pm2_unit" "$pm2_pid" || break
+        sleep 0.2
+    done
+    systemctl kill --kill-whom=all --signal=KILL "$pm2_unit" >/dev/null 2>&1 || return 1
+    daemon_needs_resume=0
+    systemctl --no-block stop "$pm2_unit" >/dev/null 2>&1 || return 1
+    deadline=$((SECONDS + 45))
     while (( SECONDS < deadline )); do
         main_pid="$(systemctl show "$pm2_unit" --property=MainPID --value 2>/dev/null || true)"
         control_pid="$(systemctl show "$pm2_unit" --property=ControlPID --value 2>/dev/null || true)"
         active_state="$(systemctl show "$pm2_unit" --property=ActiveState --value 2>/dev/null || true)"
-        if [[ "$active_state" == "active" && "$control_pid" == "0" && "$main_pid" =~ ^[1-9][0-9]*$ && "$main_pid" != "$pm2_pid" ]]; then
+        if [[ "$active_state" =~ ^(inactive|failed)$ && "$main_pid" == "0" && "$control_pid" == "0" ]] && \
+           ! process_matches_starttime "$pm2_pid" "$pm2_starttime" && \
+           pm2_unit_cgroup_is_empty "$pm2_unit"; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+)
+
+verify_pm2_daemon_identity() {
+    local pm2_unit="$1"
+    local pm2_home="$2"
+    local expected_pid="$3"
+    local expected_starttime="$4"
+    local main_pid control_pid active_state
+
+    main_pid="$(systemctl show "$pm2_unit" --property=MainPID --value 2>/dev/null || true)"
+    control_pid="$(systemctl show "$pm2_unit" --property=ControlPID --value 2>/dev/null || true)"
+    active_state="$(systemctl show "$pm2_unit" --property=ActiveState --value 2>/dev/null || true)"
+    [[ "$active_state" == "active" && "$control_pid" == "0" && "$main_pid" == "$expected_pid" ]] || return 1
+    process_matches_starttime "$expected_pid" "$expected_starttime" || return 1
+    is_root_pm2_daemon "$expected_pid" || return 1
+    [[ "$(find_pm2_systemd_unit "$expected_pid" "$pm2_home" 2>/dev/null || true)" == "$pm2_unit" ]] || return 1
+    grep -zqx 'PIDUSAGE_USE_PS=false' "/proc/${expected_pid}/environ" 2>/dev/null
+}
+
+start_pm2_systemd_unit() {
+    local pm2_unit="$1"
+    local pm2_home="$2"
+    local deadline=$((SECONDS + 45))
+    local main_pid control_pid active_state new_starttime
+
+    systemctl reset-failed "$pm2_unit" >/dev/null 2>&1 || true
+    systemctl --no-block start "$pm2_unit" >/dev/null 2>&1 || return 1
+    while (( SECONDS < deadline )); do
+        main_pid="$(systemctl show "$pm2_unit" --property=MainPID --value 2>/dev/null || true)"
+        control_pid="$(systemctl show "$pm2_unit" --property=ControlPID --value 2>/dev/null || true)"
+        active_state="$(systemctl show "$pm2_unit" --property=ActiveState --value 2>/dev/null || true)"
+        if [[ "$active_state" == "active" && "$control_pid" == "0" && "$main_pid" =~ ^[1-9][0-9]*$ ]]; then
             new_starttime="$(get_process_starttime "$main_pid" 2>/dev/null || true)"
             [[ -n "$new_starttime" ]] || return 1
-            is_root_pm2_daemon "$main_pid" || return 1
-            [[ "$(find_pm2_systemd_unit "$main_pid" "$pm2_home" 2>/dev/null || true)" == "$pm2_unit" ]] || return 1
-            grep -zqx 'PIDUSAGE_USE_PS=false' "/proc/${main_pid}/environ" 2>/dev/null || return 1
+            verify_pm2_daemon_identity "$pm2_unit" "$pm2_home" "$main_pid" "$new_starttime" || return 1
+            printf '%s:%s\n' "$main_pid" "$new_starttime"
             return 0
         fi
         sleep 0.5
@@ -564,16 +690,23 @@ restart_pm2_systemd_unit() {
 verify_restarted_pm2() {
     local pm2_home="$1"
     local expected_dump="$2"
+    local pm2_unit="$3"
+    local expected_pid="$4"
+    local expected_starttime="$5"
     local process_list deadline=$((SECONDS + 30))
 
+    verify_pm2_daemon_identity "$pm2_unit" "$pm2_home" "$expected_pid" "$expected_starttime" || return 1
     timeout --signal=TERM --kill-after=2s 10s env PM2_HOME="$pm2_home" PIDUSAGE_USE_PS=false \
         pm2 ping >/dev/null 2>&1 || return 1
+    verify_pm2_daemon_identity "$pm2_unit" "$pm2_home" "$expected_pid" "$expected_starttime" || return 1
     process_list="$(mktemp)" || return 1
     chmod 0600 "$process_list" || { rm -f -- "$process_list"; return 1; }
     while (( SECONDS < deadline )); do
         : >"$process_list" || { rm -f -- "$process_list"; return 1; }
         if timeout --signal=TERM --kill-after=2s 10s env PM2_HOME="$pm2_home" PIDUSAGE_USE_PS=false \
-            pm2 jlist >"$process_list" 2>/dev/null && verify_pm2_runtime "$expected_dump" "$process_list"; then
+            pm2 jlist >"$process_list" 2>/dev/null && \
+           verify_pm2_daemon_identity "$pm2_unit" "$pm2_home" "$expected_pid" "$expected_starttime" && \
+           verify_pm2_runtime "$expected_dump" "$process_list"; then
             rm -f -- "$process_list"
             return 0
         fi
@@ -620,11 +753,34 @@ effective_pm2_pidusage_setting() {
 
 verify_pm2_recovery_unit_settings() {
     local pm2_unit="$1"
+    local exec_stop kill_signal
+    exec_stop="$(systemctl show "$pm2_unit" --property=ExecStop --value 2>/dev/null || true)"
+    kill_signal="$(systemctl show "$pm2_unit" --property=KillSignal --value 2>/dev/null || true)"
     [[ "$(systemctl show "$pm2_unit" --property=TimeoutStopUSec --value 2>/dev/null || true)" == "15s" ]] || return 1
     [[ "$(systemctl show "$pm2_unit" --property=TimeoutStopFailureMode --value 2>/dev/null || true)" == "kill" ]] || return 1
     [[ "$(systemctl show "$pm2_unit" --property=KillMode --value 2>/dev/null || true)" == "control-group" ]] || return 1
+    [[ "$kill_signal" == "9" || "$kill_signal" == "KILL" || "$kill_signal" == "SIGKILL" ]] || return 1
     [[ "$(systemctl show "$pm2_unit" --property=SendSIGKILL --value 2>/dev/null || true)" == "yes" ]] || return 1
+    [[ "$(systemctl show "$pm2_unit" --property=Restart --value 2>/dev/null || true)" == "no" ]] || return 1
+    [[ -z "$exec_stop" ]] || return 1
     [[ "$(effective_pm2_pidusage_setting "$pm2_unit")" == "false" ]] || return 1
+}
+
+is_known_flowmaster_pm2_dropin() {
+    local dropin_file="$1"
+    local file_size content
+    [[ -f "$dropin_file" && ! -L "$dropin_file" ]] || return 1
+    [[ "$(stat -c '%u' "$dropin_file" 2>/dev/null || true)" == "0" ]] || return 1
+    [[ -z "$(find "$dropin_file" -maxdepth 0 -perm /022 -print -quit 2>/dev/null)" ]] || return 1
+    file_size="$(stat -c '%s' "$dropin_file" 2>/dev/null || true)"
+    [[ "$file_size" =~ ^[1-9][0-9]*$ ]] && (( file_size <= 1024 )) || return 1
+    content="$(<"$dropin_file")"
+    case "$content" in
+        $'[Service]\nEnvironment=PIDUSAGE_USE_PS=false' | \
+        $'[Service]\nEnvironment=PIDUSAGE_USE_PS=false\nTimeoutStopSec=15s\nTimeoutStopFailureMode=kill\nKillMode=control-group\nSendSIGKILL=yes' | \
+        $'[Service]\nEnvironment=PIDUSAGE_USE_PS=false\nRestart=no\nExecStop=\nTimeoutStopSec=15s\nTimeoutStopFailureMode=kill\nKillMode=control-group\nKillSignal=SIGKILL\nSendSIGKILL=yes') return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 restore_pm2_dropin() {
@@ -651,15 +807,18 @@ recover_unresponsive_pm2() (
     command -v flock >/dev/null 2>&1 || return 1
 
     local require_flowmaster="${1:-1}"
+    local allow_responsive="${2:-0}"
     [[ "$require_flowmaster" == "0" || "$require_flowmaster" == "1" ]] || return 1
+    [[ "$allow_responsive" == "0" || "$allow_responsive" == "1" ]] || return 1
     local pm2_home="${PM2_HOME:-/root/.pm2}"
     local pm2_pid_file="${pm2_home}/pm2.pid"
     local pm2_dump="${pm2_home}/dump.pm2"
     [[ -r "$pm2_pid_file" && -r "$pm2_dump" ]] || return 1
 
-    local pm2_pid pm2_starttime probe_status=0 pm2_unit recovery_answer recovery_dir current_cgroup
-    local dropin_dir dropin_file dropin_backup="" dropin_candidate persistent_candidate had_dropin=0
+    local pm2_pid pm2_starttime probe_status=0 pm2_unit recovery_answer recovery_dir current_cgroup responsive=0
+    local dropin_dir dropin_file dropin_backup="" dropin_candidate persistent_candidate legacy_candidate had_dropin=0
     local had_dump_backup=0 pm2_unit_exec pm2_cli_exec
+    local restarted_identity="" restarted_pid="" restarted_starttime="" expected_dump known_dropin_path
     exec {pm2_recovery_lock_fd}>/run/lock/flowmaster-pm2-recovery.lock || return 1
     flock -n "$pm2_recovery_lock_fd" || { warn "另一个 PM2 恢复流程正在运行"; return 1; }
 
@@ -670,7 +829,13 @@ recover_unresponsive_pm2() (
 
     timeout --signal=TERM --kill-after=2s 5s env PM2_HOME="$pm2_home" PIDUSAGE_USE_PS=false \
         pm2 ping >/dev/null 2>&1 || probe_status=$?
-    is_timeout_status "$probe_status" || return 1
+    if (( probe_status == 0 )); then
+        responsive=1
+        (( allow_responsive == 1 )) || return 1
+    elif ! is_timeout_status "$probe_status"; then
+        warn "PM2 健康探测失败，且不是可控超时，拒绝自动操作"
+        return 1
+    fi
 
     validate_pm2_home_directory "$pm2_home" || { warn "PM2_HOME 不是可信的 root 私有目录"; return 1; }
     validate_pm2_dump_file "$pm2_dump" || { warn "PM2 dump.pm2 不是可信的 root 普通 JSON 文件"; return 1; }
@@ -678,11 +843,6 @@ recover_unresponsive_pm2() (
         validate_pm2_dump_file "${pm2_home}/dump.pm2.bak" || { warn "PM2 dump.pm2.bak 不可信，拒绝自动恢复"; return 1; }
         had_dump_backup=1
     fi
-    if (( require_flowmaster == 1 )) && ! pm2_dump_contains_app "$pm2_dump"; then
-        warn "PM2 已保存清单中没有 FlowMaster，无法保证未保存应用的恢复完整性"
-        return 1
-    fi
-
     pm2_unit="$(find_pm2_systemd_unit "$pm2_pid" "$pm2_home" || true)"
     if [[ -z "$pm2_unit" ]]; then
         current_cgroup="$(sed -n 's/^[^:]*:[^:]*://p' "/proc/${pm2_pid}/cgroup" 2>/dev/null | tail -n 1)"
@@ -699,18 +859,32 @@ recover_unresponsive_pm2() (
         warn "当前 pm2 CLI 与 ${pm2_unit} 的 ExecStart 不是同一可执行文件，拒绝跨版本恢复"
         return 1
     fi
+    if (( require_flowmaster == 1 )) && ! pm2_dump_contains_app "$pm2_dump"; then
+        known_dropin_path="/etc/systemd/system/${pm2_unit}.d/zzzz-flowmaster-pm2-recovery.conf"
+        if (( responsive == 0 )) && is_known_flowmaster_pm2_dropin "$known_dropin_path"; then
+            warn "PM2 清单已不含 FlowMaster，但检测到可信的 FlowMaster 1.1.19 恢复配置；按故障现场兼容路径继续收敛。"
+            require_flowmaster=0
+        else
+            warn "PM2 已保存清单中没有 FlowMaster，且无法确认这是 FlowMaster 迁移留下的故障现场"
+            return 1
+        fi
+    fi
 
-    warn "PM2 守护进程无响应（PID ${pm2_pid}）。"
-    warn "无需重启主机，但会短暂重启 ${pm2_unit} 中以下已保存应用："
+    if (( responsive == 1 )); then
+        warn "检测到旧 FlowMaster 仍由 ${pm2_unit} 管理（PM2 PID ${pm2_pid}）。"
+    else
+        warn "PM2 守护进程无响应（PID ${pm2_pid}）。"
+    fi
+    warn "无需重启主机。安装器将有界停止 ${pm2_unit}，离线移除旧 FlowMaster，然后只恢复以下其他已保存应用："
     print_pm2_recovery_apps "$pm2_dump" || return 1
-    warn "未执行 pm2 save 的应用无法从无响应守护进程中可靠导出；确认后会先备份 PM2 清单与 unit 配置。"
+    warn "未执行 pm2 save 的应用无法从现有保存清单中可靠恢复；确认后会先备份 PM2 主/备清单与 unit 配置。"
     if [[ "${FLOWMASTER_RECOVER_UNRESPONSIVE_PM2:-}" == "1" ]]; then
         recovery_answer="RECOVER-PM2"
     elif [[ "${FLOWMASTER_RECOVER_UNRESPONSIVE_PM2:-}" == "0" || ! -t 0 ]]; then
-        warn "未授权重启 PM2 管理的其他应用，已保持现状。非交互运行可显式设置 FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1。"
+        warn "未授权短暂停止 PM2 管理的应用，已保持现状。非交互运行可显式设置 FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1。"
         return 1
     else
-        if ! read -r -p "如确认短暂重启上述 PM2 应用，请输入 RECOVER-PM2: " recovery_answer; then
+        if ! read -r -p "如确认有界停止 PM2 并恢复上述其他应用，请输入 RECOVER-PM2: " recovery_answer; then
             warn "未读取到恢复确认，已保持现状"
             return 1
         fi
@@ -734,12 +908,16 @@ recover_unresponsive_pm2() (
     validate_pm2_dropin_directory "$dropin_dir" || { warn "PM2 drop-in 目录不可信，拒绝写入"; return 1; }
     dropin_candidate="$recovery_dir/zzzz-flowmaster-pm2-recovery.conf.temporary"
     persistent_candidate="$recovery_dir/zzzz-flowmaster-pm2-recovery.conf.persistent"
+    legacy_candidate="$recovery_dir/zzzz-flowmaster-pm2-recovery.conf.v1.1.19"
     cat >"$dropin_candidate" <<'EOF' || return 1
 [Service]
 Environment=PIDUSAGE_USE_PS=false
+Restart=no
+ExecStop=
 TimeoutStopSec=15s
 TimeoutStopFailureMode=kill
 KillMode=control-group
+KillSignal=SIGKILL
 SendSIGKILL=yes
 EOF
     chmod 0644 "$dropin_candidate" || return 1
@@ -748,12 +926,23 @@ EOF
 Environment=PIDUSAGE_USE_PS=false
 EOF
     chmod 0644 "$persistent_candidate" || return 1
+    cat >"$legacy_candidate" <<'EOF' || return 1
+[Service]
+Environment=PIDUSAGE_USE_PS=false
+TimeoutStopSec=15s
+TimeoutStopFailureMode=kill
+KillMode=control-group
+SendSIGKILL=yes
+EOF
+    chmod 0644 "$legacy_candidate" || return 1
     if [[ -e "$dropin_file" || -L "$dropin_file" ]]; then
         [[ -f "$dropin_file" && ! -L "$dropin_file" && "$(stat -c '%u' "$dropin_file" 2>/dev/null || true)" == "0" ]] || {
             warn "PM2 drop-in 不是可信的 root 普通文件，拒绝覆盖"
             return 1
         }
-        if ! cmp -s -- "$dropin_file" "$dropin_candidate" && ! cmp -s -- "$dropin_file" "$persistent_candidate"; then
+        if ! cmp -s -- "$dropin_file" "$dropin_candidate" && \
+           ! cmp -s -- "$dropin_file" "$persistent_candidate" && \
+           ! cmp -s -- "$dropin_file" "$legacy_candidate"; then
             warn "${dropin_file} 已存在且不是 FlowMaster 预期配置，拒绝覆盖"
             return 1
         fi
@@ -767,39 +956,86 @@ EOF
         return 1
     fi
     if ! verify_pm2_recovery_unit_settings "$pm2_unit"; then
-        warn "PM2 unit 的有效停止边界被其他配置覆盖，已在重启前安全退出"
+        warn "PM2 unit 的有效停止边界被其他配置覆盖，已在停止前安全退出"
         restore_pm2_dropin "$pm2_unit" "$dropin_file" "$dropin_backup" "$had_dropin" 0 || true
         return 1
     fi
     if ! cmp -s -- "$pm2_dump" "$recovery_dir/dump.pm2.original" || \
        { (( had_dump_backup == 1 )) && ! cmp -s -- "${pm2_home}/dump.pm2.bak" "$recovery_dir/dump.pm2.bak.original"; } || \
        { (( had_dump_backup == 0 )) && [[ -e "${pm2_home}/dump.pm2.bak" ]]; }; then
-        warn "PM2 清单在确认后发生变化，已取消重启以避免恢复错误应用集合"
+        warn "PM2 清单在确认后发生变化，已取消停止以避免恢复错误应用集合"
         restore_pm2_dropin "$pm2_unit" "$dropin_file" "$dropin_backup" "$had_dropin" 0 || true
         return 1
     fi
 
-    if ! restart_pm2_systemd_unit "$pm2_unit" "$pm2_pid" "$pm2_starttime" "$pm2_home" || \
-       ! verify_restarted_pm2 "$pm2_home" "$pm2_dump"; then
-        warn "PM2 原地重启或应用集合验证失败，已停止后续安装。"
-        if install_pm2_dropin_atomically "$persistent_candidate" "$dropin_file" && systemctl daemon-reload; then
-            warn "已仅保留 PIDUSAGE_USE_PS=false 防护；PM2 清单备份位于: $recovery_dir"
-        else
-            warn "无法收敛为持久防护配置，暂时保留 15 秒有界恢复配置；请检查: $dropin_file"
-        fi
+    if ! stop_pm2_systemd_unit "$pm2_unit" "$pm2_pid" "$pm2_starttime"; then
+        warn "PM2 unit 未在 45 秒内完全停止，已保留 15 秒有界配置并停止后续安装。"
+        warn "PM2 清单备份位于: $recovery_dir"
         return 1
+    fi
+
+    if ! cmp -s -- "$pm2_dump" "$recovery_dir/dump.pm2.original" || \
+       { (( had_dump_backup == 1 )) && ! cmp -s -- "${pm2_home}/dump.pm2.bak" "$recovery_dir/dump.pm2.bak.original"; } || \
+       { (( had_dump_backup == 0 )) && [[ -e "${pm2_home}/dump.pm2.bak" ]]; }; then
+        warn "PM2 清单在 unit 停止期间发生变化；为避免恢复未确认的应用集合，已保持 unit 停止。"
+        warn "停止前清单备份位于: $recovery_dir"
+        return 1
+    fi
+    validate_pm2_dump_file "$pm2_dump" || {
+        warn "PM2 停止后 dump.pm2 不再可信；为避免启动错误应用，已保持 unit 停止。备份位于: $recovery_dir"
+        return 1
+    }
+    if [[ -e "${pm2_home}/dump.pm2.bak" ]]; then
+        validate_pm2_dump_file "${pm2_home}/dump.pm2.bak" || {
+            warn "PM2 停止后 dump.pm2.bak 不再可信；已保持 unit 停止。备份位于: $recovery_dir"
+            return 1
+        }
+    fi
+    if ! sanitize_saved_pm2_dumps "$pm2_home" "$recovery_dir"; then
+        warn "PM2 离线清单过滤失败，已保持 unit 停止。备份位于: $recovery_dir"
+        return 1
+    fi
+    expected_dump="$recovery_dir/dump.pm2.filtered"
+    cp -a -- "$pm2_dump" "$expected_dump" || return 1
+    chmod 0600 "$expected_dump" || return 1
+
+    if pm2_dump_has_entries "$expected_dump"; then
+        restarted_identity="$(start_pm2_systemd_unit "$pm2_unit" "$pm2_home")" || {
+            warn "PM2 已离线移除旧 FlowMaster，但其他已保存应用恢复失败；已停止后续安装。"
+            warn "PM2 清单备份位于: $recovery_dir"
+            return 1
+        }
+        restarted_pid="${restarted_identity%%:*}"
+        restarted_starttime="${restarted_identity#*:}"
+        if [[ ! "$restarted_pid" =~ ^[1-9][0-9]*$ || ! "$restarted_starttime" =~ ^[1-9][0-9]*$ ]] || \
+           ! verify_restarted_pm2 "$pm2_home" "$expected_dump" "$pm2_unit" "$restarted_pid" "$restarted_starttime"; then
+            warn "PM2 已离线移除旧 FlowMaster，但其他已保存应用集合或运行状态验证失败。"
+            warn "已保留有界 PM2 配置并停止后续安装；备份位于: $recovery_dir"
+            return 1
+        fi
+    else
+        systemctl reset-failed "$pm2_unit" >/dev/null 2>&1 || true
+        if [[ "$(systemctl show "$pm2_unit" --property=ActiveState --value 2>/dev/null || true)" == "active" ]] || \
+           ! pm2_unit_cgroup_is_empty "$pm2_unit"; then
+            warn "PM2 保存清单只剩空集，但 unit 未保持完全停止；已停止后续安装"
+            return 1
+        fi
     fi
 
     if ! install_pm2_dropin_atomically "$persistent_candidate" "$dropin_file" || \
        ! systemctl daemon-reload || \
        [[ "$(effective_pm2_pidusage_setting "$pm2_unit")" != "false" ]]; then
-        warn "PM2 已恢复，但 PIDUSAGE_USE_PS=false 未能持久化；保留有界恢复配置并停止后续安装"
+        warn "PM2 离线迁移已完成，但 PIDUSAGE_USE_PS=false 未能持久化；保留有界配置并停止后续安装"
         install_pm2_dropin_atomically "$dropin_candidate" "$dropin_file" || true
         systemctl daemon-reload || true
         return 1
     fi
 
-    log "PM2 已在不重启主机的情况下恢复，已保存应用集合保持不变"
+    if pm2_dump_has_entries "$expected_dump"; then
+        log "旧 FlowMaster 已从 PM2 离线移除；其他已保存应用已在不重启主机的情况下恢复"
+    else
+        log "PM2 保存清单中只有旧 FlowMaster；该条目已离线移除，${pm2_unit} 已保持停止"
+    fi
     return 0
 )
 
@@ -808,8 +1044,7 @@ retire_legacy_pm2_app() {
 
     local pm2_home="${PM2_HOME:-/root/.pm2}"
     local pm2_pid_file="${pm2_home}/pm2.pid"
-    local pm2_pid="" presence presence_status delete_status save_status
-    local recovery_attempts=0 delete_started=0
+    local pm2_pid="" presence presence_status=0
     if [[ ! -r "$pm2_pid_file" ]]; then
         finalize_pm2_dump_migration "$pm2_home" || return 1
         return 0
@@ -821,56 +1056,24 @@ retire_legacy_pm2_app() {
     fi
 
     log "检查旧版 PM2 中的 FlowMaster..."
-    while (( recovery_attempts <= 2 )); do
-        presence_status=0
-        presence="$(get_pm2_app_presence "$pm2_home")" || presence_status=$?
-        if is_timeout_status "$presence_status"; then
-            (( recovery_attempts++ )) || true
-            warn "PM2 守护进程无响应，尝试在不重启主机的情况下原地恢复。"
-            # 删除动作开始前必须确认已保存清单仍包含 FlowMaster；开始后则允许
-            # 以已经写入的清单为权威，兼容 delete/save 超时但落盘成功的情况。
-            recover_unresponsive_pm2 "$((1 - delete_started))" || return 1
-            continue
-        fi
-        if (( presence_status != 0 )); then
-            warn "无法读取 PM2 进程清单，拒绝把通信错误误判为 FlowMaster 不存在"
-            return 1
-        fi
-        if [[ "$presence" == "absent" ]]; then
-            finalize_pm2_dump_migration "$pm2_home" || return 1
-            (( delete_started == 0 )) || log "旧 FlowMaster 已从 PM2 安全迁移；其他 PM2 应用保持不变"
-            return 0
-        fi
-
-        delete_started=1
-        delete_status=0
-        timeout --signal=TERM --kill-after=2s 15s env PM2_HOME="$pm2_home" PIDUSAGE_USE_PS=false \
-            pm2 delete "$APP_NAME" >/dev/null 2>&1 || delete_status=$?
-        if is_timeout_status "$delete_status"; then
-            (( recovery_attempts++ )) || true
-            warn "从 PM2 移除旧 FlowMaster 超时，尝试原地恢复后重试。"
-            recover_unresponsive_pm2 0 || return 1
-            continue
-        fi
-        (( delete_status == 0 )) || { warn "PM2 拒绝删除旧 FlowMaster"; return 1; }
-
-        save_status=0
-        timeout --signal=TERM --kill-after=2s 10s env PM2_HOME="$pm2_home" PIDUSAGE_USE_PS=false \
-            pm2 save --force >/dev/null 2>&1 || save_status=$?
-        if is_timeout_status "$save_status"; then
-            (( recovery_attempts++ )) || true
-            warn "PM2 进程列表保存超时，尝试原地恢复后重试。"
-            recover_unresponsive_pm2 0 || return 1
-            continue
-        fi
-        (( save_status == 0 )) || { warn "PM2 进程列表保存失败"; return 1; }
-        finalize_pm2_dump_migration "$pm2_home" || return 1
-        log "旧 FlowMaster 已从 PM2 安全迁移；其他 PM2 应用保持不变"
+    presence="$(get_pm2_app_presence "$pm2_home")" || presence_status=$?
+    if is_timeout_status "$presence_status"; then
+        warn "PM2 守护进程无响应，改用单次离线迁移；不会调用会递归执行 ps 的 pm2 delete。"
+        recover_unresponsive_pm2 1 0 || return 1
         return 0
-    done
+    fi
+    if (( presence_status != 0 )); then
+        warn "无法读取 PM2 进程清单，拒绝把通信错误误判为 FlowMaster 不存在"
+        return 1
+    fi
+    if [[ "$presence" == "absent" ]]; then
+        finalize_pm2_dump_migration "$pm2_home" || return 1
+        return 0
+    fi
 
-    warn "PM2 连续恢复后仍无响应，已停止安装"
-    return 1
+    warn "旧 FlowMaster 将通过 PM2 unit 的单次有界停止和离线清单过滤迁移，避免触发 PM2 5.x TreeKill 的递归 ps。"
+    recover_unresponsive_pm2 1 1 || return 1
+    return 0
 }
 
 stop_systemd_service() {

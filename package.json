@@ -1,6 +1,6 @@
 {
   "name": "flowmaster",
-  "version": "1.1.19",
+  "version": "1.1.20",
   "description": "专业的网络流量实时监控系统",
   "main": "server.js",
   "scripts": {

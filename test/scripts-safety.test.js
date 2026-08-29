@@ -30,9 +30,22 @@ test('安装脚本不会删除 vnstat 数据库', () => {
     assert.match(source, /sanitize_saved_pm2_dumps/);
     assert.match(source, /FLOWMASTER_RECOVER_UNRESPONSIVE_PM2/);
     assert.match(source, /RECOVER-PM2/);
-    assert.match(source, /pm2 save --force/);
+    assert.doesNotMatch(source, /\bpm2\s+delete\s+["'$]/);
+    assert.doesNotMatch(source, /\bpm2\s+kill\s+["'$]/);
+    assert.match(source, /systemctl --no-block stop/);
+    assert.match(source, /systemctl --no-block start/);
+    assert.match(source, /ExecStop=\n/);
+    assert.match(source, /KillSignal=SIGKILL/);
+    assert.match(source, /systemctl kill --kill-whom=all --signal=KILL/);
+    assert.match(source, /trap resume_frozen_pm2 EXIT/);
     assert.match(source, /TimeoutStopFailureMode=kill/);
     assert.match(source, /install_pm2_dropin_atomically/);
+
+    const stopCall = source.indexOf('stop_pm2_systemd_unit "$pm2_unit"');
+    const offlineFilter = source.indexOf('sanitize_saved_pm2_dumps "$pm2_home" "$recovery_dir"', stopCall);
+    const startCall = source.indexOf('start_pm2_systemd_unit "$pm2_unit"', offlineFilter);
+    assert.ok(stopCall >= 0 && offlineFilter > stopCall && startCall > offlineFilter,
+        'PM2 迁移必须按停止、离线过滤、按需启动的顺序执行');
 });
 
 test('备份脚本包含一致性、校验与恢复前回滚措施', () => {
