@@ -38,6 +38,7 @@ cleanup_pm2_recovery_test() {
         kill -CONT "$FROZEN_PM2_PID" >/dev/null 2>&1 || true
     fi
     systemctl --no-block stop "$TEST_UNIT" >/dev/null 2>&1 || true
+    systemctl disable "$TEST_UNIT" >/dev/null 2>&1 || true
     for _ in {1..50}; do
         [[ "$(systemctl show "$TEST_UNIT" --property=ActiveState --value 2>/dev/null || true)" == "inactive" ]] && break
         sleep 0.1
@@ -124,6 +125,27 @@ run_retire() {
     PM2_HOME="$PM2_TEST_HOME" \
     PATH="$(dirname "$PM2_BIN"):$PATH" \
         bash -c 'source "$1"; retire_legacy_pm2_app' _ "$INSTALLER"
+}
+
+run_recovery_with_handoff_failure() {
+    local deploy_state_dir="$1"
+    install -d -o root -g root -m 0700 "$deploy_state_dir"
+    FLOWMASTER_RECOVER_UNRESPONSIVE_PM2=1 \
+    FLOWMASTER_BACKUP_ROOT="$TEST_BACKUP_ROOT" \
+    PM2_HOME="$PM2_TEST_HOME" \
+    PATH="$(dirname "$PM2_BIN"):$PATH" \
+        bash -c '
+            set -Eeuo pipefail
+            source "$1"
+            DEPLOY_STATE_DIR="$2"
+            PM2_HANDOFF_MARKER="$2/pm2-flowmaster-retired"
+            eval "$(declare -f record_pm2_handoff | sed "1s/record_pm2_handoff/record_pm2_handoff_before_test_failure/")"
+            record_pm2_handoff() {
+                record_pm2_handoff_before_test_failure "$@"
+                return 1
+            }
+            recover_unresponsive_pm2 1 1
+        ' _ "$INSTALLER" "$deploy_state_dir"
 }
 
 freeze_and_recover() {
@@ -235,10 +257,38 @@ ExecStop=$PM2_BIN kill
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+systemctl enable "$TEST_UNIT" >/dev/null
 systemctl start "$TEST_UNIT"
 wait_for_app "$keeper_port" keeper-app
 wait_for_app "$flowmaster_port" flowmaster
 assert_app_status stopped-app stopped
+
+# handoff marker 已经原子落盘、但 recovery_stage 尚未推进到 4 时发生本地故障，
+# EXIT 回滚必须恢复原 PM2 清单和运行状态，并同步清除 marker，避免外层事务
+# 再启动一个重复的 FlowMaster systemd 实例。
+handoff_state_dir="$TEST_BACKUP_ROOT/handoff-stage3-test"
+handoff_old_pid="$(<"$PM2_TEST_HOME/pm2.pid")"
+reset_ps_trace
+if run_recovery_with_handoff_failure "$handoff_state_dir"; then
+    echo "handoff marker 写入后的注入故障不应被视为迁移成功" >&2
+    exit 1
+fi
+[[ ! -e "$handoff_state_dir/pm2-flowmaster-retired" ]]
+handoff_new_pid="$(<"$PM2_TEST_HOME/pm2.pid")"
+[[ "$handoff_new_pid" =~ ^[1-9][0-9]*$ && "$handoff_new_pid" != "$handoff_old_pid" ]]
+if kill -0 "$handoff_old_pid" >/dev/null 2>&1; then
+    echo "handoff 回滚后的旧 PM2 daemon 仍然存活: $handoff_old_pid" >&2
+    exit 1
+fi
+assert_no_treekill_ps
+wait_for_app "$keeper_port" keeper-app
+wait_for_app "$flowmaster_port" flowmaster
+assert_runtime_names '["flowmaster","keeper-app","stopped-app"]'
+assert_app_status stopped-app stopped
+for dump_file in "$PM2_TEST_HOME/dump.pm2" "$PM2_TEST_HOME/dump.pm2.bak"; do
+    [[ ! -e "$dump_file" ]] || FLOWMASTER_BACKUP_ROOT="$TEST_BACKUP_ROOT" PM2_HOME="$PM2_TEST_HOME" \
+        bash -c 'source "$1"; pm2_dump_contains_app "$2"' _ "$INSTALLER" "$dump_file"
+done
 
 # 后置 drop-in 覆盖停止边界时，恢复必须在重启前拒绝并保持原 daemon 不变。
 install -d -o root -g root -m 0755 "$DROPIN_DIR"
@@ -274,6 +324,28 @@ wait_for_app_to_stop "$flowmaster_port" flowmaster
 assert_runtime_names '["keeper-app","stopped-app"]'
 assert_app_status stopped-app stopped
 assert_saved_dumps_exclude_flowmaster
+
+# 模拟“应用集合已恢复、但临时 drop-in 尚未收尾”时进程被终止。下一次执行应
+# 原地收敛为永久 PIDUSAGE 配置，不能再次重启仍在正常运行的其他应用。
+convergence_pid="$(<"$PM2_TEST_HOME/pm2.pid")"
+cat >"$DROPIN_DIR/zzzz-flowmaster-pm2-recovery.conf" <<'EOF'
+[Service]
+Environment=PIDUSAGE_USE_PS=false
+Restart=no
+ExecStop=
+TimeoutStopSec=15s
+TimeoutStopFailureMode=kill
+KillMode=control-group
+KillSignal=SIGKILL
+SendSIGKILL=yes
+EOF
+chmod 0644 "$DROPIN_DIR/zzzz-flowmaster-pm2-recovery.conf"
+systemctl daemon-reload
+run_retire
+[[ "$(<"$PM2_TEST_HOME/pm2.pid")" == "$convergence_pid" ]]
+[[ "$(<"$DROPIN_DIR/zzzz-flowmaster-pm2-recovery.conf")" == $'[Service]\nEnvironment=PIDUSAGE_USE_PS=false' ]]
+wait_for_app "$keeper_port" keeper-app
+assert_app_status stopped-app stopped
 
 # 重新把 FlowMaster 加回健康 PM2，验证 retire 同样只执行一次 stop -> 离线过滤 -> start。
 APP_PORT="$flowmaster_port" APP_NAME=flowmaster PM2_HOME="$PM2_TEST_HOME" \
@@ -332,6 +404,10 @@ wait_for_app_to_stop "$flowmaster_port" flowmaster
 [[ "$(systemctl show "$TEST_UNIT" --property=ActiveState --value)" == "inactive" ]]
 [[ "$(systemctl show "$TEST_UNIT" --property=MainPID --value)" == "0" ]]
 [[ "$(systemctl show "$TEST_UNIT" --property=ControlPID --value)" == "0" ]]
+if systemctl is-enabled --quiet "$TEST_UNIT"; then
+    echo "只含 FlowMaster 的空 PM2 unit 不应在重启后再次拉起" >&2
+    exit 1
+fi
 if kill -0 "$only_flowmaster_old_pid" >/dev/null 2>&1; then
     echo "仅保存 FlowMaster 的迁移完成后 PM2 daemon 仍然存活: $only_flowmaster_old_pid" >&2
     exit 1

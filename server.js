@@ -7,23 +7,50 @@ const path = require('path');
 const app = express();
 const packageJson = require('./package.json');
 
-function parsePositiveInteger(value, fallback) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+function parseIntegerInRange(value, fallback, minimum, maximum) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const normalized = String(value).trim();
+    if (!/^\d+$/.test(normalized)) return fallback;
+    const parsed = Number(normalized);
+    return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+        ? parsed
+        : fallback;
+}
+
+function parseBoolean(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (String(value).trim().toLowerCase() === 'true') return true;
+    if (String(value).trim().toLowerCase() === 'false') return false;
+    return fallback;
 }
 
 // 运行配置优先由环境变量或 .env 提供；生产环境由 systemd 托管进程。
-const port = parsePositiveInteger(process.env.PORT, 10089);
+const port = parseIntegerInRange(process.env.PORT, 10089, 1, 65535);
 const host = process.env.HOST || '0.0.0.0';
-const commandTimeout = parsePositiveInteger(process.env.VNSTAT_COMMAND_TIMEOUT_MS, 15000);
-const maxRangeDays = parsePositiveInteger(process.env.MAX_RANGE_DAYS, 3660);
+const commandTimeout = parseIntegerInRange(process.env.VNSTAT_COMMAND_TIMEOUT_MS, 15000, 1000, 120000);
+const maxRangeDays = parseIntegerInRange(process.env.MAX_RANGE_DAYS, 3660, 1, 36525);
+const vnstatMaxConcurrency = parseIntegerInRange(process.env.VNSTAT_MAX_CONCURRENCY, 4, 1, 32);
+const vnstatMaxQueue = parseIntegerInRange(process.env.VNSTAT_MAX_QUEUE, 256, 1, 10000);
+const realtimeInterval = parseIntegerInRange(process.env.REALTIME_INTERVAL_MS, 5000, 1000, 60000);
+const realtimeIdleTimeout = parseIntegerInRange(process.env.REALTIME_IDLE_TIMEOUT_MS, 30000, 10000, 3600000);
+const realtimeMaxStale = parseIntegerInRange(process.env.REALTIME_MAX_STALE_MS, 15000, 5000, 600000);
+const realtimeMaxActive = parseIntegerInRange(process.env.REALTIME_MAX_ACTIVE, 2, 1, 16);
+const realtimeMaxBackoff = Math.max(
+    realtimeInterval,
+    parseIntegerInRange(process.env.REALTIME_MAX_BACKOFF_MS, 60000, 5000, 3600000)
+);
 
 // 缓存配置
 const cacheConfig = {
-    maxSize: parsePositiveInteger(process.env.CACHE_MAX_SIZE, 100),
-    maxMemoryMB: parsePositiveInteger(process.env.CACHE_MAX_MEMORY_MB, 50),
-    cleanupInterval: parsePositiveInteger(process.env.CACHE_CLEANUP_INTERVAL, 60000),
-    memoryMonitorInterval: parsePositiveInteger(process.env.MEMORY_MONITOR_INTERVAL, 300000)
+    maxSize: parseIntegerInRange(process.env.CACHE_MAX_SIZE, 100, 1, 10000),
+    maxMemoryMB: parseIntegerInRange(process.env.CACHE_MAX_MEMORY_MB, 50, 1, 4096),
+    cleanupInterval: parseIntegerInRange(process.env.CACHE_CLEANUP_INTERVAL, 60000, 1000, 3600000),
+    memoryMonitorInterval: parseIntegerInRange(
+        process.env.MEMORY_MONITOR_INTERVAL,
+        300000,
+        10000,
+        86400000
+    )
 };
 
 // 缓存管理器类
@@ -203,6 +230,7 @@ const cacheManager = new CacheManager(cacheConfig.maxSize, cacheConfig.maxMemory
 const translations = {
     'month': '月份',
     'day': '日期',
+    'date': '日期',
     'hour': '小时',
     'rx': '接收',
     'tx': '发送',
@@ -227,6 +255,7 @@ const translations = {
     'bytes': '字节',
     'packets': '数据包',
     'packets/s': '包/秒',
+    'bit/s': 'b/秒',
     'bits/s': 'b/秒',
     'kbit/s': 'kb/秒',
     'Mbit/s': 'Mb/秒',
@@ -400,9 +429,57 @@ function normalizeValue(value, targetUnit) {
     };
     valueInMiB *= sourceFactors[sourceUnit] || 1;
 
-    if (targetUnit === 'GiB') return `${(valueInMiB / 1024).toFixed(2)} GiB`;
-    if (targetUnit === 'TiB') return `${(valueInMiB / (1024 * 1024)).toFixed(2)} TiB`;
-    return `${valueInMiB.toFixed(2)} MiB`;
+    const formatAmount = amount => {
+        if (amount === 0 || Math.abs(amount) >= 0.01) return amount.toFixed(2);
+        // 小流量换算到大单位时保留约三位有效数字，避免非零值显示成 0.00。
+        const decimals = Math.min(8, Math.max(3, Math.ceil(-Math.log10(Math.abs(amount))) + 2));
+        return amount.toFixed(decimals);
+    };
+    if (targetUnit === 'GiB') return `${formatAmount(valueInMiB / 1024)} GiB`;
+    if (targetUnit === 'TiB') return `${formatAmount(valueInMiB / (1024 * 1024))} TiB`;
+    return `${formatAmount(valueInMiB)} MiB`;
+}
+
+function parseTrafficValueMiB(value) {
+    const match = String(value || '').match(/([\d.]+)\s*(B|KiB|MiB|GiB|TiB|PiB)\b/i);
+    if (!match) return null;
+    const amount = Number.parseFloat(match[1]);
+    if (!Number.isFinite(amount)) return null;
+    const factors = {
+        B: 1 / (1024 * 1024),
+        KIB: 1 / 1024,
+        MIB: 1,
+        GIB: 1024,
+        TIB: 1024 * 1024,
+        PIB: 1024 * 1024 * 1024
+    };
+    return amount * factors[match[2].toUpperCase()];
+}
+
+// 旧 data 保持原有文本结构；新增结构化 MiB 数值供客户端稳定绘图并避免字符串解析损失。
+function parseTrafficSeries(stdout, period) {
+    const points = [];
+    const labelPattern = /^(?:\d{2}(?::\d{2})?|\d{2}\/\d{2}\/\d{2}|\d{4}(?:-\d{2}(?:-\d{2})?)?)$/;
+    let lines = stripTerminalControlSequences(stdout).split('\n');
+    if (period === '5') lines = filterStatsByTime(lines, 'minutes');
+    if (period === 'h') lines = filterStatsByTime(lines, 'hours');
+    if (period === 'd') lines = filterStatsByTime(lines, 'days');
+    for (const rawLine of lines) {
+        const parts = rawLine.split('|');
+        if (parts.length < 3) continue;
+
+        const receiveMatch = parts[0].match(/([\d.]+\s*(?:B|KiB|MiB|GiB|TiB|PiB))\s*$/i);
+        if (!receiveMatch) continue;
+        const label = parts[0].slice(0, receiveMatch.index).trim();
+        if (!labelPattern.test(label)) continue;
+
+        const rx = parseTrafficValueMiB(receiveMatch[1]);
+        const tx = parseTrafficValueMiB(parts[1]);
+        const total = parseTrafficValueMiB(parts[2]);
+        if (rx === null || tx === null || total === null) continue;
+        points.push({ label, rx, tx, total });
+    }
+    return { unit: 'MiB', points };
 }
 
 function normalizeStatsLines(lines, period, targetUnit = periodUnitMap[period] || 'MiB') {
@@ -419,6 +496,7 @@ function normalizeStatsLines(lines, period, targetUnit = periodUnitMap[period] |
         }
 
         line = line.replace(/^(\s*\d{2}(:\d{2})?)(\s+)/, '$1 |$3');
+        line = line.replace(/^(\s*\d{2}\/\d{2}\/\d{2})(\s+)/, '$1 |$2');
         line = line.replace(/^(\s*\d{4}-\d{2}-\d{2})(\s+)/, '$1 |$2');
         line = line.replace(/^(\s*\d{4}-\d{2})(\s+)/, '$1 |$2');
         line = line.replace(/^(\s*\d{4})(\s+)/, '$1 |$2');
@@ -439,6 +517,17 @@ function formatStatsOutput(stdout, period) {
     if (period === 'd') lines = filterStatsByTime(lines, 'days');
     if (period === 'l') return lines;
     return normalizeStatsLines(lines, period);
+}
+
+function buildStatsResult(stdout, period, targetUnit) {
+    const translatedLines = translateOutput(stdout).split('\n');
+    const data = targetUnit
+        ? normalizeStatsLines(translatedLines, period, targetUnit)
+        : formatStatsOutput(stdout, period);
+    return {
+        data,
+        series: parseTrafficSeries(stdout, period)
+    };
 }
 
 function isValidInterfaceName(interfaceName) {
@@ -462,6 +551,44 @@ function parseInterfaceList(output) {
     return interfaces;
 }
 
+function parseDatabaseInterfaceList(output) {
+    return [...new Set(
+        String(output || '')
+            .split(/\r?\n/)
+            .map(value => value.trim())
+            .filter(isValidInterfaceName)
+    )];
+}
+
+const singleFlightRequests = new Map();
+function singleFlight(key, task) {
+    const existing = singleFlightRequests.get(key);
+    if (existing) return existing;
+    const promise = Promise.resolve().then(task);
+    singleFlightRequests.set(key, promise);
+    const clear = () => {
+        if (singleFlightRequests.get(key) === promise) singleFlightRequests.delete(key);
+    };
+    promise.then(clear, clear);
+    return promise;
+}
+
+async function mapWithConcurrency(values, concurrency, mapper) {
+    const results = new Array(values.length);
+    let nextIndex = 0;
+    const workers = Array.from(
+        { length: Math.min(concurrency, values.length) },
+        async () => {
+            while (nextIndex < values.length) {
+                const index = nextIndex++;
+                results[index] = await mapper(values[index], index);
+            }
+        }
+    );
+    await Promise.all(workers);
+    return results;
+}
+
 function parseIsoDate(value) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return null;
     const [year, month, day] = value.split('-').map(Number);
@@ -474,129 +601,378 @@ function parseIsoDate(value) {
     return parsed;
 }
 
+class VnstatCommandRunner {
+    constructor({ maxConcurrency = 4, maxQueue = 256, execFileImpl = execFile } = {}) {
+        this.maxConcurrency = maxConcurrency;
+        this.maxQueue = maxQueue;
+        this.execFileImpl = execFileImpl;
+        this.active = 0;
+        this.foregroundQueue = [];
+        this.backgroundQueue = [];
+    }
+
+    execute(args, options = {}) {
+        const queued = this.foregroundQueue.length + this.backgroundQueue.length;
+        if (queued >= this.maxQueue) {
+            const error = new Error('vnstat 命令队列已满');
+            error.code = 'VNSTAT_QUEUE_FULL';
+            return Promise.reject(error);
+        }
+
+        return new Promise((resolve, reject) => {
+            const job = { args, options, resolve, reject };
+            if (options.priority === 'background') {
+                this.backgroundQueue.push(job);
+            } else {
+                this.foregroundQueue.push(job);
+            }
+            this.pump();
+        });
+    }
+
+    pump() {
+        while (this.active < this.maxConcurrency) {
+            const job = this.foregroundQueue.shift() || this.backgroundQueue.shift();
+            if (!job) return;
+            this.startJob(job);
+        }
+    }
+
+    startJob(job) {
+        this.active++;
+        const { priority, env, ...overrides } = job.options;
+        const execOptions = {
+            timeout: commandTimeout,
+            maxBuffer: 1024 * 1024,
+            windowsHide: true,
+            ...overrides,
+            env: {
+                ...process.env,
+                ...(env || {}),
+                LC_ALL: 'C',
+                LANG: 'C'
+            }
+        };
+        let completed = false;
+        const finish = (error, stdout = '', stderr = '') => {
+            if (completed) return;
+            completed = true;
+            this.active--;
+            if (error) {
+                error.stderr = stderr;
+                job.reject(error);
+            } else {
+                job.resolve(stdout);
+            }
+            this.pump();
+        };
+
+        try {
+            this.execFileImpl('vnstat', job.args, execOptions, finish);
+        } catch (error) {
+            finish(error);
+        }
+    }
+
+    getStats() {
+        return {
+            active: this.active,
+            queued: this.foregroundQueue.length + this.backgroundQueue.length,
+            maxConcurrency: this.maxConcurrency,
+            maxQueue: this.maxQueue
+        };
+    }
+}
+
+const vnstatRunner = new VnstatCommandRunner({
+    maxConcurrency: vnstatMaxConcurrency,
+    maxQueue: vnstatMaxQueue
+});
+
+function runVnstatPromise(args, options = {}) {
+    return vnstatRunner.execute(args, options);
+}
+
 function runVnstat(args, options, callback) {
     const normalizedOptions = typeof options === 'function' ? {} : options;
     const normalizedCallback = typeof options === 'function' ? options : callback;
-    execFile('vnstat', args, {
-        timeout: commandTimeout,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true,
-        ...normalizedOptions
-    }, normalizedCallback);
+    runVnstatPromise(args, normalizedOptions).then(
+        stdout => normalizedCallback(null, stdout, ''),
+        error => normalizedCallback(error, '', error.stderr || '')
+    );
 }
 
-function runVnstatPromise(args, options = {}) {
-    return new Promise((resolve, reject) => {
-        runVnstat(args, options, (error, stdout, stderr) => {
-            if (error) {
-                error.stderr = stderr;
-                reject(error);
-                return;
+class RealtimeCollectorManager {
+    constructor({
+        cache,
+        runCommand,
+        intervalMs = 5000,
+        idleTimeoutMs = 30000,
+        maxStaleMs = 15000,
+        maxActive = 2,
+        maxBackoffMs = 60000,
+        cacheSize = 20,
+        now = () => Date.now(),
+        setTimer = setTimeout,
+        clearTimer = clearTimeout,
+        logger = console
+    }) {
+        this.cache = cache;
+        this.runCommand = runCommand;
+        this.intervalMs = intervalMs;
+        this.idleTimeoutMs = idleTimeoutMs;
+        this.maxStaleMs = maxStaleMs;
+        this.maxActive = maxActive;
+        this.maxBackoffMs = Math.max(intervalMs, maxBackoffMs);
+        this.cacheSize = cacheSize;
+        this.cacheTtlMs = Math.max(cacheSize * intervalMs * 2, idleTimeoutMs + maxStaleMs);
+        this.now = now;
+        this.setTimer = setTimer;
+        this.clearTimer = clearTimer;
+        this.logger = logger;
+        this.states = new Map();
+        this.enabled = false;
+    }
+
+    start() {
+        this.enabled = true;
+    }
+
+    stop() {
+        this.enabled = false;
+        for (const state of this.states.values()) this.disposeState(state);
+        this.states.clear();
+    }
+
+    disposeState(state) {
+        state.disposed = true;
+        if (state.timer) this.clearTimer(state.timer);
+        state.timer = null;
+    }
+
+    removeState(state) {
+        if (this.states.get(state.interfaceName) !== state) return;
+        this.disposeState(state);
+        this.states.delete(state.interfaceName);
+    }
+
+    touch(interfaceName) {
+        let state = this.states.get(interfaceName);
+        if (state) {
+            state.lastAccessed = this.now();
+            return state;
+        }
+
+        while (this.states.size >= this.maxActive) {
+            let oldest = null;
+            for (const candidate of this.states.values()) {
+                // 正在执行的采样不能被驱逐；否则同一接口可被重新创建并绕过活跃上限。
+                if (candidate.inFlight) continue;
+                if (!oldest || candidate.lastAccessed < oldest.lastAccessed) oldest = candidate;
             }
-            resolve(stdout);
-        });
-    });
-}
+            if (!oldest) {
+                const error = new Error('实时采集器当前已满');
+                error.code = 'REALTIME_CAPACITY_FULL';
+                throw error;
+            }
+            this.removeState(oldest);
+        }
 
-// ========== 主动定时采集和缓存vnstat数据 ========== //
-const REALTIME_CACHE_SIZE = 20;
-const REALTIME_INTERVAL = 5000; // 5秒
+        state = {
+            interfaceName,
+            lastAccessed: this.now(),
+            timer: null,
+            inFlight: null,
+            failures: 0,
+            nextAttemptAt: 0,
+            lastError: null,
+            disposed: false
+        };
+        this.states.set(interfaceName, state);
+        return state;
+    }
 
-// 记录采集状态和计时器，避免同一接口的慢命令重叠执行。
-const startedRealtime = new Set();
-const collectionTimers = new Set();
-const realtimeInFlight = new Map();
-let collectionsEnabled = false;
+    latest(interfaceName, countStats = true) {
+        const queue = countStats
+            ? this.cache.get(`realtime:${interfaceName}`)
+            : this.cache.peek(`realtime:${interfaceName}`);
+        return queue && queue.length > 0 ? queue[queue.length - 1] : null;
+    }
 
-function scheduleAfter(task, delay) {
-    const timer = setTimeout(async () => {
-        collectionTimers.delete(timer);
-        await task();
-    }, delay);
-    timer.unref?.();
-    collectionTimers.add(timer);
-}
+    responseFor(entry, stale) {
+        return {
+            data: entry.data,
+            timestamp: entry.timestamp,
+            stale,
+            ageMs: Math.max(0, this.now() - entry.timestamp)
+        };
+    }
 
-function collectRealtimeSample(interfaceName) {
-    const existing = realtimeInFlight.get(interfaceName);
-    if (existing) return existing;
+    schedule(state, delay) {
+        if (!this.enabled || state.disposed || this.states.get(state.interfaceName) !== state) return;
+        if (state.timer) this.clearTimer(state.timer);
+        const idleRemaining = this.idleTimeoutMs - (this.now() - state.lastAccessed);
+        if (idleRemaining <= 0) {
+            this.removeState(state);
+            return;
+        }
+        const boundedDelay = Math.max(0, Math.min(delay, idleRemaining));
+        state.timer = this.setTimer(async () => {
+            state.timer = null;
+            await this.onTimer(state);
+        }, boundedDelay);
+        state.timer?.unref?.();
+    }
 
-    const promise = (async () => {
+    ensureScheduled(state) {
+        if (!this.enabled || state.timer || state.inFlight || state.disposed) return;
+        const now = this.now();
+        const latest = this.latest(state.interfaceName, false);
+        const delay = state.nextAttemptAt > now
+            ? state.nextAttemptAt - now
+            : latest
+                ? Math.max(0, this.intervalMs - (now - latest.timestamp))
+                : 0;
+        this.schedule(state, delay);
+    }
+
+    async onTimer(state) {
+        if (state.disposed || this.states.get(state.interfaceName) !== state) return;
+        const now = this.now();
+        if (now - state.lastAccessed >= this.idleTimeoutMs) {
+            this.removeState(state);
+            return;
+        }
+        if (state.nextAttemptAt > now) {
+            this.schedule(state, state.nextAttemptAt - now);
+            return;
+        }
         try {
-            const stdout = await runVnstatPromise(['-tr', '5', '-i', interfaceName], { timeout: commandTimeout });
-            if (stdout) {
+            await this.collect(state, 'background');
+        } catch (_) {
+            // collect 已记录简明错误并安排退避重试。
+        }
+    }
+
+    collect(state, priority = 'foreground') {
+        if (state.inFlight) return state.inFlight;
+        if (state.timer) this.clearTimer(state.timer);
+        state.timer = null;
+        const startedAt = this.now();
+        const promise = (async () => {
+            try {
+                const stdout = await this.runCommand(
+                    ['-tr', '5', '-i', state.interfaceName],
+                    { timeout: commandTimeout, priority }
+                );
+                if (!stdout) {
+                    const error = new Error('vnstat 未返回实时统计');
+                    error.code = 'VNSTAT_EMPTY_OUTPUT';
+                    throw error;
+                }
                 const entry = {
-                    timestamp: Date.now(),
+                    timestamp: this.now(),
                     data: translateOutput(stdout).split('\n')
                 };
-                const queue = cacheManager.peek(`realtime:${interfaceName}`) || [];
+                const previous = this.cache.peek(`realtime:${state.interfaceName}`) || [];
+                const keepCount = Math.max(0, this.cacheSize - 1);
+                const queue = keepCount > 0 ? previous.slice(-keepCount) : [];
                 queue.push(entry);
-                if (queue.length > REALTIME_CACHE_SIZE) queue.shift();
-                cacheManager.set(`realtime:${interfaceName}`, queue, REALTIME_CACHE_SIZE * REALTIME_INTERVAL * 2);
+                this.cache.set(`realtime:${state.interfaceName}`, queue, this.cacheTtlMs);
+                state.failures = 0;
+                state.nextAttemptAt = 0;
+                state.lastError = null;
                 return entry;
+            } catch (error) {
+                state.failures++;
+                const backoff = Math.min(
+                    this.maxBackoffMs,
+                    this.intervalMs * (2 ** Math.min(state.failures - 1, 20))
+                );
+                state.nextAttemptAt = this.now() + backoff;
+                state.lastError = error;
+                this.logger.error(`实时采集接口 ${state.interfaceName} 失败: ${error.message}`);
+                throw error;
+            } finally {
+                state.inFlight = null;
+                if (!state.disposed && this.states.get(state.interfaceName) === state) {
+                    const delay = state.nextAttemptAt > this.now()
+                        ? state.nextAttemptAt - this.now()
+                        : Math.max(0, this.intervalMs - (this.now() - startedAt));
+                    this.schedule(state, delay);
+                }
             }
-        } catch (error) {
-            console.error(`实时采集接口 ${interfaceName} 失败:`, error.message);
-            throw error;
-        } finally {
-            realtimeInFlight.delete(interfaceName);
-        }
-        return null;
-    })();
+        })();
+        state.inFlight = promise;
+        return promise;
+    }
 
-    realtimeInFlight.set(interfaceName, promise);
-    return promise;
+    async getSample(interfaceName) {
+        const state = this.touch(interfaceName);
+        let latest = this.latest(interfaceName);
+        if (latest && this.now() - latest.timestamp <= this.maxStaleMs) {
+            this.ensureScheduled(state);
+            return this.responseFor(latest, false);
+        }
+
+        if (state.nextAttemptAt <= this.now()) {
+            try {
+                latest = await this.collect(state, 'foreground');
+                return this.responseFor(latest, false);
+            } catch (error) {
+                latest = this.latest(interfaceName, false);
+                if (!latest) throw error;
+            }
+        } else {
+            this.ensureScheduled(state);
+        }
+
+        if (!latest) {
+            throw state.lastError || new Error('暂时无法读取实时流量统计');
+        }
+        return this.responseFor(latest, true);
+    }
+
+    getStateSnapshot() {
+        return Array.from(this.states.values(), state => ({
+            interfaceName: state.interfaceName,
+            lastAccessed: state.lastAccessed,
+            failures: state.failures,
+            nextAttemptAt: state.nextAttemptAt,
+            inFlight: Boolean(state.inFlight)
+        }));
+    }
 }
 
-function scheduleRealtimeCollection(interfaceName) {
-    if (startedRealtime.has(interfaceName)) return;
-    startedRealtime.add(interfaceName);
+const effectiveRealtimeMaxActive = Math.min(
+    realtimeMaxActive,
+    vnstatMaxConcurrency > 1 ? vnstatMaxConcurrency - 1 : 1
+);
+const realtimeCollectorManager = new RealtimeCollectorManager({
+    cache: cacheManager,
+    runCommand: (args, options) => runVnstatPromise(args, options),
+    intervalMs: realtimeInterval,
+    idleTimeoutMs: realtimeIdleTimeout,
+    maxStaleMs: realtimeMaxStale,
+    maxActive: effectiveRealtimeMaxActive,
+    maxBackoffMs: realtimeMaxBackoff
+});
 
-    const collect = async () => {
-        const startedAt = Date.now();
-        try {
-            await collectRealtimeSample(interfaceName);
-        } catch (_) {
-            // collectRealtimeSample 已记录具体错误；定时器保持运行以便下次自动恢复。
-        } finally {
-            if (collectionsEnabled) {
-                scheduleAfter(collect, Math.max(0, REALTIME_INTERVAL - (Date.now() - startedAt)));
-            }
-        }
-    };
-
-    scheduleAfter(collect, REALTIME_INTERVAL);
-}
-
-// 启动时不再为所有物理和虚拟接口预热；实时采集由 API 首次访问按需启动。
+// 实时采集由 API 首次访问按需启动，并在客户端停止访问后自动回收。
 function startAllScheduledCollections() {
-    collectionsEnabled = true;
+    realtimeCollectorManager.start();
 }
 
 function stopAllScheduledCollections() {
-    collectionsEnabled = false;
-    for (const timer of collectionTimers) clearTimeout(timer);
-    collectionTimers.clear();
-    startedRealtime.clear();
+    realtimeCollectorManager.stop();
 }
 
-if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+if (parseBoolean(process.env.TRUST_PROXY, false)) app.set('trust proxy', 1);
 
 const corsOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
-
-if (corsOrigins.length > 0) {
-    app.use(cors({
-        origin(origin, callback) {
-            if (!origin || corsOrigins.includes(origin)) return callback(null, true);
-            const error = new Error('来源不在 CORS 白名单中');
-            error.status = 403;
-            return callback(error);
-        }
-    }));
-}
 
 app.use((req, res, next) => {
     res.set({
@@ -604,18 +980,17 @@ app.use((req, res, next) => {
         'X-Frame-Options': 'DENY',
         'Referrer-Policy': 'no-referrer',
         'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-        // 当前无构建版 Vue 需要运行时编译模板，因此暂时保留 unsafe-eval；脚本来源仍限制为本站。
-        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        // 当前无构建版 Vue 需要运行时编译模板，因此暂时保留 unsafe-eval；页面已无内联脚本。
+        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     });
     next();
 });
 
-app.use(express.json({ limit: '16kb' }));
-
-const rateLimitWindowMs = parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, 60000);
-const rateLimitMax = parsePositiveInteger(process.env.RATE_LIMIT_MAX, 180);
-const rateLimitMaxClients = parsePositiveInteger(process.env.RATE_LIMIT_MAX_CLIENTS, 10000);
+const rateLimitWindowMs = parseIntegerInRange(process.env.RATE_LIMIT_WINDOW_MS, 60000, 1000, 3600000);
+const rateLimitMax = parseIntegerInRange(process.env.RATE_LIMIT_MAX, 180, 1, 1000000);
+const rateLimitMaxClients = parseIntegerInRange(process.env.RATE_LIMIT_MAX_CLIENTS, 10000, 1, 1000000);
 const requestBuckets = new Map();
+// 限流必须先于 CORS 和请求体解析，确保预期拒绝与解析错误同样消耗配额。
 app.use('/api', (req, res, next) => {
     const now = Date.now();
     const bucket = requestBuckets.get(req.ip);
@@ -644,16 +1019,41 @@ const bucketCleanupTimer = setInterval(() => {
 }, rateLimitWindowMs);
 bucketCleanupTimer.unref?.();
 
+if (corsOrigins.length > 0) {
+    app.use(cors({
+        origin(origin, callback) {
+            if (!origin || corsOrigins.includes(origin)) return callback(null, true);
+            const error = new Error('来源不在 CORS 白名单中');
+            error.status = 403;
+            error.expose = true;
+            return callback(error);
+        }
+    }));
+}
+
+app.use(express.json({ limit: '16kb' }));
+
 app.use('/vendor/bootstrap', express.static(path.join(__dirname, 'node_modules/bootstrap/dist')));
-app.use('/vendor/bootstrap-icons', express.static(path.join(__dirname, 'node_modules/bootstrap-icons/font')));
 app.use('/vendor/chart.js', express.static(path.join(__dirname, 'node_modules/chart.js/dist')));
 app.use('/vendor/vue', express.static(path.join(__dirname, 'node_modules/vue/dist')));
 app.use('/vendor/axios', express.static(path.join(__dirname, 'node_modules/axios/dist')));
 app.use(express.static(path.join(__dirname, 'public')));
 
+function timingSafeStringEqual(expected, provided) {
+    const expectedBuffer = Buffer.from(String(expected || ''));
+    const providedBuffer = Buffer.from(String(provided || ''));
+    return expectedBuffer.length === providedBuffer.length &&
+        crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+const allowAnonymousAdmin = parseBoolean(process.env.ALLOW_ANONYMOUS_ADMIN, false);
+
 function requireAdminIfConfigured(req, res, next) {
     const expected = process.env.ADMIN_TOKEN;
     if (!expected) {
+        if (!allowAnonymousAdmin) {
+            return res.status(403).json({ error: '匿名管理接口已禁用' });
+        }
         const origin = req.get('Origin');
         if (!origin) return next();
         try {
@@ -664,65 +1064,56 @@ function requireAdminIfConfigured(req, res, next) {
         return res.status(403).json({ error: '拒绝跨站管理请求' });
     }
     const provided = req.get('X-Admin-Token') || '';
-    const expectedBuffer = Buffer.from(expected);
-    const providedBuffer = Buffer.from(provided);
-    if (
-        expectedBuffer.length !== providedBuffer.length ||
-        !crypto.timingSafeEqual(expectedBuffer, providedBuffer)
-    ) {
+    if (!timingSafeStringEqual(expected, provided)) {
         return res.status(401).json({ error: '需要管理员凭据' });
     }
     next();
 }
 
+async function readTrackedInterfaces() {
+    try {
+        const databaseInterfaces = await runVnstatPromise(['--dbiflist', '1']);
+        return parseDatabaseInterfaceList(databaseInterfaces);
+    } catch (error) {
+        // 兼容不支持 --dbiflist 的旧版 vnstat；fallback 仍受全局并发限制。
+        console.warn(`vnstat --dbiflist 不可用，回退到接口逐项检查: ${error.message}`);
+        const iflistResult = await runVnstatPromise(['--iflist']);
+        const allInterfaces = parseInterfaceList(iflistResult);
+        const validation = await mapWithConcurrency(
+            allInterfaces,
+            vnstatMaxConcurrency,
+            async interfaceName => {
+                try {
+                    const stdout = await runVnstatPromise(['-i', interfaceName, '--oneline']);
+                    return stdout.trim() ? interfaceName : null;
+                } catch (_) {
+                    return null;
+                }
+            }
+        );
+        return validation.filter(Boolean);
+    }
+}
+
 // 获取网络接口列表
 app.get('/api/interfaces', async (req, res) => {
+    const cacheKey = cacheManager.generateKey('interfaces');
+    const cachedData = cacheManager.get(cacheKey);
+    if (cachedData) return res.json(cachedData);
+
     try {
-        // 检查缓存
-        const cacheKey = cacheManager.generateKey('interfaces');
-        const cachedData = cacheManager.get(cacheKey);
-        
-        if (cachedData) {
-            return res.json(cachedData);
-        }
-
-        // 获取所有接口列表
-        const iflistResult = await runVnstatPromise(['--iflist']);
-
-        // 解析接口列表
-        const allInterfaces = parseInterfaceList(iflistResult);
-
-        // 验证每个接口是否有效
-        const validInterfaces = [];
-        for (const interface of allInterfaces) {
-            try {
-                await new Promise((resolve, reject) => {
-                    runVnstat(['-i', interface, '--oneline'], (error, stdout) => {
-                        if (!error && stdout.trim()) {
-                            validInterfaces.push(interface);
-                        }
-                        resolve();
-                    });
-                });
-            } catch (error) {
-                console.error(`检查接口 ${interface} 时出错:`, error);
-            }
-        }
-
-        // 如果没有找到有效接口，默认返回 eth0
-        if (validInterfaces.length === 0) {
-            validInterfaces.push('eth0');
-        }
-
-        const result = { interfaces: validInterfaces };
-        
-        // 缓存结果（5分钟）
-        cacheManager.set(cacheKey, result, 5 * 60 * 1000);
-        
-        res.json(result);
+        const result = await singleFlight(cacheKey, async () => {
+            const cachedInsideFlight = cacheManager.peek(cacheKey);
+            if (cachedInsideFlight) return cachedInsideFlight;
+            const interfaces = await readTrackedInterfaces();
+            const loaded = { interfaces };
+            cacheManager.set(cacheKey, loaded, 5 * 60 * 1000);
+            return loaded;
+        });
+        return res.json(result);
     } catch (error) {
         console.error('获取网络接口列表失败:', error.message);
-        res.status(503).json({ error: '无法读取 vnstat 网络接口，请检查服务状态' });
+        return res.status(503).json({ error: '无法读取 vnstat 网络接口，请检查服务状态' });
     }
 });
 
@@ -737,32 +1128,30 @@ app.get('/api/stats/:interface/:period', async (req, res) => {
         return res.status(400).json({ error: '无效的时间周期' });
     }
     if (period === 'l') {
-        // 优先返回主动缓存的实时数据
-        const cachedQueue = cacheManager.get(`realtime:${interfaceName}`);
-        if (cachedQueue && cachedQueue.length > 0) {
-            const latest = cachedQueue[cachedQueue.length - 1];
-            return res.json({ data: latest.data, timestamp: latest.timestamp });
-        }
-        // 首次请求直接等待一个样本；同接口并发请求复用同一个 vnstat 子进程。
         try {
-            const entry = await collectRealtimeSample(interfaceName);
-            if (collectionsEnabled) scheduleRealtimeCollection(interfaceName);
-            if (!entry) return res.status(503).json({ error: '暂时无法读取实时流量统计' });
-            return res.json({ data: entry.data, timestamp: entry.timestamp });
+            const sample = await realtimeCollectorManager.getSample(interfaceName);
+            return res.json(sample);
         } catch (_) {
             return res.status(503).json({ error: '暂时无法读取实时流量统计' });
         }
     }
-    // 其他周期优先返回主动缓存
-    const cachedData = cacheManager.get(`stats:${interfaceName}:${period}`);
-    if (cachedData) {
-        return res.json(cachedData);
+    const cacheKey = `stats:${interfaceName}:${period}`;
+    const cachedData = cacheManager.get(cacheKey);
+    if (cachedData) return res.json(cachedData);
+
+    try {
+        const result = await singleFlight(cacheKey, async () => {
+            const cachedInsideFlight = cacheManager.peek(cacheKey);
+            if (cachedInsideFlight) return cachedInsideFlight;
+            const loaded = await getStatsWithoutCache(interfaceName, period);
+            cacheManager.set(cacheKey, loaded, getCacheTimeForPeriod(period));
+            return loaded;
+        });
+        return res.json(result);
+    } catch (error) {
+        console.error(`读取接口 ${interfaceName}/${period} 失败:`, error.message);
+        return res.status(503).json({ error: '暂时无法读取流量统计' });
     }
-    // 否则降级为现查现算
-    getStatsWithoutCache(interfaceName, period, res, (result) => {
-        // 缓存结果
-        cacheManager.set(`stats:${interfaceName}:${period}`, result, getCacheTimeForPeriod(period));
-    });
 });
 
 // 获取缓存时间
@@ -778,40 +1167,24 @@ function getCacheTimeForPeriod(period) {
 }
 
 // 获取统计数据（无缓存）
-function getStatsWithoutCache(interface, period, res, callback) {
+async function getStatsWithoutCache(interfaceName, period) {
     let args;
     switch(period) {
-        case 'l':
-            args = ['-tr', '5', '-i', interface];
-            break;
         case '5':
-            args = ['-5', '-i', interface];
+            args = ['-5', '-i', interfaceName];
             break;
         default:
-            args = [`-${period}`, '-i', interface];
+            args = [`-${period}`, '-i', interfaceName];
     }
-    
-    runVnstat(args, (error, stdout) => {
-        if (error) {
-            console.error(`读取接口 ${interface}/${period} 失败:`, error.message);
-            return res.status(503).json({ error: '暂时无法读取流量统计' });
-        }
-        const result = { data: formatStatsOutput(stdout, period) };
-        
-        // 如果有回调函数，执行回调
-        if (callback) {
-            callback(result);
-        }
-        
-        res.json(result);
-    });
+    const stdout = await runVnstatPromise(args);
+    return buildStatsResult(stdout, period);
 }
 
 // 添加日期范围查询API
-app.get('/api/stats/:interface/range/:startDate/:endDate', (req, res) => {
-    const { interface, startDate, endDate } = req.params;
+app.get('/api/stats/:interface/range/:startDate/:endDate', async (req, res) => {
+    const { interface: interfaceName, startDate, endDate } = req.params;
     
-    if (!isValidInterfaceName(interface)) {
+    if (!isValidInterfaceName(interfaceName)) {
         return res.status(400).json({ error: '无效的接口名称' });
     }
 
@@ -829,32 +1202,39 @@ app.get('/api/stats/:interface/range/:startDate/:endDate', (req, res) => {
     }
 
     // 检查缓存
-    const cacheKey = cacheManager.generateKey('range', interface, startDate, endDate);
+    const cacheKey = cacheManager.generateKey('range', interfaceName, startDate, endDate);
     const cachedData = cacheManager.get(cacheKey);
-    
-    if (cachedData) {
-        return res.json(cachedData);
-    }
+    if (cachedData) return res.json(cachedData);
 
-    runVnstat(['-i', interface, '--begin', startDate, '--end', endDate, '-d'], (error, stdout) => {
-        if (error) {
-            console.error(`读取接口 ${interface} 日期范围失败:`, error.message);
-            return res.status(503).json({ error: '暂时无法读取日期范围统计' });
-        }
-        const result = {
-            data: normalizeStatsLines(translateOutput(stdout).split('\n'), 'range', 'GiB')
-        };
-        
-        // 缓存结果（10分钟）
-        cacheManager.set(cacheKey, result, 10 * 60 * 1000);
-        
-        res.json(result);
-    });
+    try {
+        const result = await singleFlight(cacheKey, async () => {
+            const cachedInsideFlight = cacheManager.peek(cacheKey);
+            if (cachedInsideFlight) return cachedInsideFlight;
+            const stdout = await runVnstatPromise([
+                '-i', interfaceName, '--begin', startDate, '--end', endDate, '-d'
+            ]);
+            const loaded = buildStatsResult(stdout, 'range', 'GiB');
+            cacheManager.set(cacheKey, loaded, 10 * 60 * 1000);
+            return loaded;
+        });
+        return res.json(result);
+    } catch (error) {
+        console.error(`读取接口 ${interfaceName} 日期范围失败:`, error.message);
+        return res.status(503).json({ error: '暂时无法读取日期范围统计' });
+    }
 });
 
 // 添加获取版本号的路由
 app.get('/api/version', (req, res) => {
-    res.json({ version: packageJson.version });
+    const result = { version: packageJson.version };
+    const expectedInstanceToken = process.env.FLOWMASTER_INSTANCE_TOKEN;
+    if (
+        expectedInstanceToken &&
+        timingSafeStringEqual(expectedInstanceToken, req.get('X-FlowMaster-Instance-Token') || '')
+    ) {
+        result.instanceTokenMatched = true;
+    }
+    res.json(result);
 });
 
 // 添加缓存统计API
@@ -962,9 +1342,7 @@ app.use('/api', (req, res) => {
 
 // 错误处理中间件
 app.use((err, req, res, next) => {
-    console.error('服务器错误:', err.stack);
-    
-    // 记录详细的错误信息
+    void next;
     const errorInfo = {
         timestamp: new Date().toISOString(),
         url: req.url,
@@ -977,29 +1355,24 @@ app.use((err, req, res, next) => {
             name: err.name
         }
     };
-    
-    // 如果是缓存相关错误，记录详细信息
-    if (err.message && err.message.includes('cache')) {
-        console.error('缓存错误详情:', {
-            ...errorInfo,
-            cacheStats: cacheManager.getStats()
-        });
-    }
-    
-    // 如果是vnstat相关错误，记录详细信息
-    if (err.message && (err.message.includes('vnstat') || err.message.includes('command'))) {
-        console.error('vnstat命令错误详情:', errorInfo);
-    }
-    
-    // 根据错误类型返回不同的响应
+
     let statusCode = Number.isInteger(err.status) && err.status >= 400 && err.status <= 599 ? err.status : 500;
     let errorMessage = '服务器内部错误';
-    
+
     if (statusCode === 403) {
         errorMessage = '请求来源不被允许';
+    } else if (err.type === 'entity.parse.failed') {
+        statusCode = 400;
+        errorMessage = '请求体不是有效的 JSON';
+    } else if (err.type === 'entity.too.large') {
+        statusCode = 413;
+        errorMessage = '请求体过大';
     } else if (err.code === 'ENOENT') {
         statusCode = 503;
         errorMessage = '服务暂时不可用，请检查vnstat命令是否正确安装';
+    } else if (err.code === 'VNSTAT_QUEUE_FULL') {
+        statusCode = 503;
+        errorMessage = '服务繁忙，请稍后重试';
     } else if (err.code === 'ETIMEDOUT') {
         statusCode = 504;
         errorMessage = '请求超时，请稍后重试';
@@ -1007,7 +1380,22 @@ app.use((err, req, res, next) => {
         statusCode = 503;
         errorMessage = 'vnstat命令执行失败，请检查系统配置';
     }
-    
+
+    const expectedError = err.expose === true ||
+        err.type === 'entity.parse.failed' ||
+        err.type === 'entity.too.large';
+    if (expectedError) {
+        console.warn(`请求被拒绝: ${req.method} ${req.originalUrl} -> ${statusCode}`);
+    } else {
+        console.error('服务器错误:', err.stack || err.message);
+        if (err.message && err.message.includes('cache')) {
+            console.error('缓存错误详情:', { ...errorInfo, cacheStats: cacheManager.getStats() });
+        }
+        if (err.message && (err.message.includes('vnstat') || err.message.includes('command'))) {
+            console.error('vnstat命令错误详情:', errorInfo);
+        }
+    }
+
     res.status(statusCode).json({ 
         error: errorMessage,
         timestamp: errorInfo.timestamp,
@@ -1075,19 +1463,49 @@ if (require.main === module) {
     process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+const runtimeConfig = Object.freeze({
+    port,
+    host,
+    commandTimeout,
+    maxRangeDays,
+    cache: Object.freeze({ ...cacheConfig }),
+    rateLimitWindowMs,
+    rateLimitMax,
+    rateLimitMaxClients,
+    vnstatMaxConcurrency,
+    vnstatMaxQueue,
+    realtimeInterval,
+    realtimeIdleTimeout,
+    realtimeMaxStale,
+    realtimeMaxActive: effectiveRealtimeMaxActive,
+    realtimeMaxBackoff,
+    allowAnonymousAdmin
+});
+
 module.exports = {
     app,
     CacheManager,
+    RealtimeCollectorManager,
+    VnstatCommandRunner,
+    buildStatsResult,
     cacheManager,
     filterStatsByTime,
     formatStatsOutput,
     isValidInterfaceName,
     normalizeStatsLines,
     normalizeValue,
+    parseBoolean,
+    parseDatabaseInterfaceList,
+    parseIntegerInRange,
     parseInterfaceList,
     parseIsoDate,
+    parseTrafficSeries,
+    realtimeCollectorManager,
+    runtimeConfig,
     startServer,
     stopServer,
     stripTerminalControlSequences,
-    translateOutput
+    timingSafeStringEqual,
+    translateOutput,
+    vnstatRunner
 };

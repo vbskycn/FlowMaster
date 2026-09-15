@@ -20,8 +20,8 @@ FlowMaster 是一个面向 Linux 服务器的轻量级网络流量监控面板�
 
 ## 系统要求
 
-- 使用 systemd 的 Linux 发行版；Debian 是当前真实验证环境。
-- Node.js 18 或更高版本，以及与该版本兼容的 npm。
+- 使用 systemd 247 或更高版本的 Linux 发行版；Debian 是当前真实验证环境。安装器会读取 `systemctl --version` 并在改动服务前拒绝过旧版本。
+- Node.js 18 或更高版本，以及与该版本兼容的 npm；新部署优先使用仍受维护的 Node.js 22/24 LTS。
 - vnstat 2.x。
 - root 权限，用于安装依赖和创建 systemd 服务。
 - 默认监听 TCP `10089`；安装前请确认端口可用。
@@ -56,7 +56,7 @@ sudo env \
 
 `gh-proxy.com` 是第三方服务，其可用性和返回内容不由本项目控制。能直连 GitHub 时优先使用官方地址；对可复现部署要求较高时，请固定 Release 标签并从可信渠道核对 SHA-256，参见[安装与运维指南](docs/operations.md#固定版本与下载校验)。
 
-安装器会在替换旧版本前执行锁文件安装、语法检查和临时服务冒烟测试。新服务启动验证失败时会尝试自动回滚，成功更新后的旧程序保存在 `/var/backups/flowmaster/rollback-*`。
+安装器与备份工具共享维护锁；源码归档通过结构校验后才会执行可复现依赖安装和带随机实例令牌的临时冒烟测试。目录替换、unit 和控制命令更新处于同一回滚事务中，收到信号或启动验证失败都会恢复旧状态。成功更新后的旧程序以 `/opt/.flowmaster-rollback-*` 保留。
 
 > 从旧 PM2 部署迁移时，如果安装器检测到可信且仍包含 FlowMaster 的 PM2 systemd 服务，无论它当前健康还是无响应，都会列出受影响的已保存应用并要求输入 `RECOVER-PM2`。请先核对列表，不要自行执行 `pm2 delete`、`pm2 kill` 或直接杀死 PM2 守护进程。详细流程见[PM2 迁移与僵尸进程处理](docs/operations.md#pm2-迁移与僵尸进程处理)。
 
@@ -87,13 +87,16 @@ sudo journalctl -u flowmaster.service -f
 
 公网部署时应使用 HTTPS 反向代理、限制 `10089` 的访问来源，并设置 `ADMIN_TOKEN`。该令牌只保护管理接口，不会为整个面板增加登录认证；如需限制全部页面和查询 API，请同时在反向代理层配置访问控制。
 
+生产服务以专用的 `flowmaster` 系统账号运行，不再以 root 运行。程序目录仅允许 root 写入，服务账号只获得读取程序、配置和 vnstat 数据所需的权限。
+
 ## 配置
 
 生产安装目录是 `/opt/flowmaster`。首次创建配置文件时：
 
 ```bash
 sudo cp -n /opt/flowmaster/.env.example /opt/flowmaster/.env
-sudo chmod 600 /opt/flowmaster/.env
+sudo chown root:flowmaster /opt/flowmaster/.env
+sudo chmod 640 /opt/flowmaster/.env
 sudo editor /opt/flowmaster/.env
 sudo systemctl restart flowmaster.service
 ```
@@ -104,6 +107,7 @@ sudo systemctl restart flowmaster.service
 
 ```dotenv
 ADMIN_TOKEN=请替换为高强度随机值
+ALLOW_ANONYMOUS_ADMIN=false
 CORS_ORIGINS=https://monitor.example.com
 TRUST_PROXY=false
 ```
@@ -120,9 +124,9 @@ FlowMaster 不拥有 vnstat 数据库。安装、更新和卸载不会删除 `/v
 sudo bash /opt/flowmaster/backup_vnstat.sh
 ```
 
-默认备份目录是 `/var/backups/flowmaster/vnstat`。归档包含外部 SHA-256、内部文件校验和、vnstat JSON 导出和环境元数据；恢复前会再次校验，并将当前数据库保留为带时间戳的回滚目录。
+默认备份目录是 `/var/backups/flowmaster/vnstat`。工具会在停服前验证归档结构、内外校验和与 vnstat 数据库，恢复失败或被信号中断时会换回原数据。
 
-卸载时重新运行安装脚本并选择“卸载 FlowMaster”。程序文件会归档到 `/var/backups/flowmaster/uninstalled-*`，vnstat 数据保持不变。
+卸载时重新运行安装脚本并选择“卸载 FlowMaster”。程序文件会原子归档；备份根目录与 `/opt` 同一文件系统时位于 `/var/backups/flowmaster/.flowmaster-uninstalled-*`，否则保留为 `/opt/.flowmaster-uninstalled-*`。vnstat 数据保持不变。
 
 完整的备份、恢复和回滚边界见[安装与运维指南](docs/operations.md#vnstat-备份与恢复)。
 
@@ -140,7 +144,9 @@ sudo bash /opt/flowmaster/backup_vnstat.sh
 | POST | `/api/cache/clear` | 清空缓存，管理接口 |
 | GET | `/api/test/vnstat` | 执行 vnstat 诊断，管理接口 |
 
-`period` 支持 `l`、`5`、`h`、`d`、`m`、`y`。管理接口在配置 `ADMIN_TOKEN` 后要求请求头 `X-Admin-Token`。
+`period` 支持 `l`、`5`、`h`、`d`、`m`、`y`。管理接口默认拒绝匿名请求；配置 `ADMIN_TOKEN` 后使用请求头 `X-Admin-Token`。确需兼容可信内网旧调用方时可显式设置 `ALLOW_ANONYMOUS_ADMIN=true`。
+
+非实时统计在保留现有 `data` 文本的同时提供 MiB 精度的 `series`；实时响应提供 `timestamp`、`stale` 和 `ageMs`，便于客户端识别陈旧样本。
 
 请求、响应、鉴权和状态码说明见 [API 文档](docs/api.md)。
 
@@ -160,7 +166,7 @@ curl --fail http://127.0.0.1:10089/api/version
 
 ```bash
 sudo systemctl status vnstat --no-pager
-vnstat --iflist
+vnstat --dbiflist 1
 ip route show default
 ```
 

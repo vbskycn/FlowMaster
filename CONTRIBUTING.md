@@ -4,10 +4,10 @@
 
 ## 开发环境
 
-- Node.js 18 或更高版本。
+- Node.js 18 或更高版本；提交前至少使用一个当前受维护的 LTS 版本验证，CI 矩阵覆盖 18、22 和 24。
 - 使用仓库中的 `package-lock.json` 和 `npm ci`。
 - Linux/vnstat 行为需要在真实 Linux 环境验证。
-- Shell 回归测试需要 Bash；`test/install-linux.test.sh` 使用隔离模拟，不要求 systemd。
+- Shell 回归测试需要 Linux、Bash 和常用 GNU 工具；`test/install-linux.test.sh` 使用隔离模拟，不要求 systemd。
 - PM2 故障注入测试需要真实 Debian/systemd 环境和 root。
 
 安装依赖并启动开发服务：
@@ -41,7 +41,7 @@ npm run dev
 
 ```bash
 npm run test:ci
-npm audit --audit-level=high
+npm audit --audit-level=moderate
 ```
 
 Linux Shell 与安装器回归：
@@ -50,10 +50,15 @@ Linux Shell 与安装器回归：
 bash -n install.sh
 bash -n backup_vnstat.sh
 bash -n test/backup-vnstat-lifecycle.test.sh
+bash -n test/backup-vnstat-safety.test.sh
 bash -n test/install-linux.test.sh
+bash -n test/install-transaction.test.sh
 bash -n test/pm2-recovery-systemd.test.sh
+shellcheck --severity=warning install.sh backup_vnstat.sh test/*.sh
 bash test/backup-vnstat-lifecycle.test.sh
+bash test/backup-vnstat-safety.test.sh
 bash test/install-linux.test.sh
+bash test/install-transaction.test.sh
 ```
 
 如果修改 PM2 恢复流程，还必须在真实 Debian/systemd 环境以 root 运行：
@@ -64,7 +69,11 @@ sudo bash test/pm2-recovery-systemd.test.sh
 
 该测试会安装隔离的 PM2 5.4.3 测试依赖并创建临时 unit。不得把它指向生产 `PM2_HOME`。
 
-修改 vnstat 解析、日期过滤、单位换算、缓存或接口参数时，必须增加对应回归测试。静态检查不能替代真实 vnstat 命令、API 冒烟或 systemd 行为验证。
+修改 vnstat 解析、日期过滤、单位换算、缓存或接口参数时，必须增加对应回归测试。非实时统计必须同时保持兼容 `data` 与结构化 `series`，实时统计必须覆盖 `timestamp`、`stale` 和 `ageMs` 语义。静态检查不能替代真实 vnstat 命令、API 冒烟或 systemd 行为验证。
+
+`test/backup-vnstat-safety.test.sh` 覆盖归档权限、成员类型与路径、内外校验和、恢复事务、信号回滚和共享维护锁；修改备份或恢复流程时不得只运行生命周期测试。
+
+`test/install-transaction.test.sh` 覆盖预检无副作用、systemd 状态查询故障、卸载回滚和重复终止信号；修改安装、卸载或部署事务时必须运行。
 
 ## 提交
 

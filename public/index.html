@@ -3,1365 +3,286 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
-    <!-- 添加网站图标 -->
-    <link rel="icon" type="image/png" href="favicon.png">
-    <link rel="apple-touch-icon" href="favicon.png">
-    
-    <!-- SEO Meta 标签 -->
-    <title>FlowMaster | 专业的网络流量实时监控系统</title>
-    <meta name="description" content="FlowMaster是一款专业的网络流量监控系统，提供实时流量统计、历史数据查询、多接口支持等功能，帮助您更好地管理和分析网络流量。">
-    <meta name="keywords" content="FlowMaster,流量监控,网络监控,流量统计,网络流量分析,实时监控">
-    <meta name="author" content="vbskycn">
-    
-    <!-- Open Graph Meta 标签 (用于社交媒体分享) -->
-    <meta property="og:title" content="FlowMaster | 专业的网络流量实时监控系统">
-    <meta property="og:description" content="专业的网络流量监控系统，提供实时流量统计、历史数据查询、多接口支持等功能。">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://github.com/vbskycn/FlowMaster">
-    
-    <!-- Twitter Card Meta 标签 -->
-    <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="FlowMaster | 专业的网络流量实时监控系统">
-    <meta name="twitter:description" content="专业的网络流量监控系统，提供实时流量统计、历史数据查询、多接口支持等功能。">
-    
-    <!-- 移动设备优化 -->
-    <meta name="theme-color" content="#4a90e2">
+    <meta name="description" content="FlowMaster 是面向 Linux 服务器的网络流量实时监控面板。">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#1d4ed8">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    
-    <!-- 搜索引擎指令 -->
-    <meta name="robots" content="index, follow">
-    <link rel="canonical" href="https://github.com/vbskycn/FlowMaster">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>FlowMaster | 网络流量实时监控</title>
 
-    <!-- 结构化数据 (JSON-LD) -->
-    <script type="application/ld+json">
-    {
-        "@context": "http://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "FlowMaster",
-        "description": "专业的网络流量实时监控系统，提供实时流量统计、历史数据查询、多接口支持等功能。",
-        "applicationCategory": "NetworkMonitoringTool",
-        "operatingSystem": "All",
-        "author": {
-            "@type": "Person",
-            "name": "vbskycn",
-            "url": "https://github.com/vbskycn"
-        },
-        "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-        }
-    }
-    </script>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="apple-touch-icon" href="/favicon.png">
+    <link rel="stylesheet" href="/vendor/bootstrap/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="stylesheet" href="/css/dark-theme.css">
 
-    <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
-    <script src="/vendor/chart.js/chart.umd.js"></script>
-    <script src="/vendor/vue/vue.global.prod.js"></script>
-    <script src="/vendor/axios/axios.min.js"></script>
-    <link href="/vendor/bootstrap-icons/bootstrap-icons.css" rel="stylesheet">
-    <link href="/css/main.css" rel="stylesheet">
-    <link href="/css/dark-theme.css" rel="stylesheet">
-    
-    <!-- 新增：资源预加载优化 -->
-    <link rel="preload" href="/vendor/bootstrap/css/bootstrap.min.css" as="style">
-    <link rel="preload" href="/vendor/vue/vue.global.prod.js" as="script">
-    <link rel="preload" href="/vendor/axios/axios.min.js" as="script">
-    
-    <!-- 新增：性能监控 -->
-    <script>
-        // 性能监控
-        window.performanceMark = function(name) {
-            if (window.performance && window.performance.mark) {
-                window.performance.mark(name);
-            }
-        };
-        
-        // 记录页面加载开始
-        window.performanceMark('app-start');
-    </script>
+    <script defer src="/vendor/chart.js/chart.umd.js"></script>
+    <script defer src="/vendor/vue/vue.global.prod.js"></script>
+    <script defer src="/vendor/axios/axios.min.js"></script>
+    <script defer src="/js/flowmaster-core.js"></script>
+    <script defer src="/js/app.js"></script>
 </head>
 <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
     <div id="app">
-    <header class="container py-4">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div class="d-flex align-items-center">
-                    <h1 class="mb-0">FlowMaster 流量监控</h1>
-                    <span class="version-badge ms-3" v-cloak>v{{version}}</span>
-                </div>
-                <div class="refresh-control text-end">
-                    <div class="form-check form-switch d-inline-block">
-                        <input class="form-check-input" type="checkbox" v-model="autoRefresh" id="autoRefreshSwitch">
-                        <label class="form-check-label" for="autoRefreshSwitch">
-                            自动刷新
-                        </label>
+        <header class="app-header">
+            <div class="container py-4">
+                <div class="header-layout">
+                    <div class="brand-line">
+                        <h1 class="mb-0">FlowMaster 流量监控</h1>
+                        <span v-if="version" class="version-badge" v-cloak :aria-label="`当前版本 ${version}`">v{{version}}</span>
                     </div>
-                    <!-- 主题切换开关 -->
-                    <button class="btn btn-sm ms-2" :class="isDarkMode ? 'btn-dark' : 'btn-light'" @click="toggleTheme" :aria-label="isDarkMode ? '切换为浅色' : '切换为深色'" style="vertical-align:middle;">
-                        <span v-if="isDarkMode">🌙</span>
-                        <span v-else>☀️</span>
-                    </button>
-                    <!-- 调试模式按钮已移除 -->
-                    <div class="update-time" v-if="lastUpdateTime">
-                        最后更新: {{lastUpdateTime}}
+
+                    <div class="refresh-control">
+                        <div class="form-check form-switch d-inline-flex align-items-center gap-2">
+                            <input
+                                id="autoRefreshSwitch"
+                                v-model="autoRefresh"
+                                class="form-check-input"
+                                type="checkbox"
+                            >
+                            <label class="form-check-label" for="autoRefreshSwitch">自动刷新</label>
+                        </div>
+                        <button
+                            type="button"
+                            class="btn btn-sm theme-toggle"
+                            @click="toggleTheme"
+                            :aria-label="isDarkMode ? '切换为浅色主题' : '切换为深色主题'"
+                        >
+                            <span aria-hidden="true">{{isDarkMode ? '🌙' : '☀️'}}</span>
+                        </button>
+                        <div class="sample-status" role="status" aria-live="polite" aria-atomic="true">
+                            <span :class="realtimeStatusClass">{{realtimeStatusText}}</span>
+                            <span v-if="lastUpdateTime"> · 最后样本：{{lastUpdateTime}}</span>
+                        </div>
                     </div>
                 </div>
             </div>
+        </header>
 
-            <div v-if="error" class="alert alert-danger" v-cloak>
+        <main id="main-content" class="container pb-4" tabindex="-1">
+            <div v-if="error" class="alert alert-danger" role="alert" aria-live="assertive" v-cloak>
                 {{error}}
-                <button class="btn btn-sm btn-outline-danger ms-2" @click="runDiagnosis" title="运行诊断">
-                    <i class="bi bi-bug"></i> 诊断问题
-                </button>
             </div>
 
-            <!-- 新增：诊断结果显示 -->
-            <div v-if="diagnosisResult" class="alert alert-info" v-cloak>
-                <h6>诊断结果 ({{diagnosisResult.timestamp}})</h6>
-                <div v-if="diagnosisResult.serverStatus">
-                    <strong>服务器状态:</strong> 
-                    <span :class="diagnosisResult.serverStatus.success ? 'text-success' : 'text-danger'">
-                        {{diagnosisResult.serverStatus.success ? '连接正常' : '连接失败'}}
-                    </span>
-                    <span v-if="!diagnosisResult.serverStatus.success" class="text-muted">
-                        ({{diagnosisResult.serverStatus.error}})
-                    </span>
+            <section class="mb-3" aria-labelledby="interface-heading">
+                <h2 id="interface-heading" class="visually-hidden">网络接口</h2>
+                <div class="row align-items-center">
+                    <div class="col-md-4">
+                        <label class="form-label" for="networkInterface">网络接口</label>
+                        <select
+                            id="networkInterface"
+                            v-model="selectedInterface"
+                            class="form-select"
+                            :disabled="interfacesLoading || interfaces.length === 0"
+                            :aria-busy="interfacesLoading ? 'true' : 'false'"
+                            @change="handleInterfaceChange"
+                            v-cloak
+                        >
+                            <option v-for="interfaceName in interfaces" :key="interfaceName" :value="interfaceName">
+                                {{interfaceName}}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="col-md-8">
+                        <p class="text-muted mb-0 mt-2 mt-md-4" v-cloak>
+                            当前选择：{{selectedInterface || (interfacesLoading ? '正在检测…' : '未检测到可用接口')}}
+                        </p>
+                    </div>
                 </div>
-                <div v-if="diagnosisResult.vnstatTest">
-                    <strong>vnstat测试:</strong> 
-                    <span :class="diagnosisResult.vnstatTest.success ? 'text-success' : 'text-danger'">
-                        {{diagnosisResult.vnstatTest.success ? '正常' : '失败'}}
-                    </span>
-                </div>
-                <div v-if="diagnosisResult.recommendations.length > 0">
-                    <strong>建议:</strong>
-                    <ul class="mb-0 mt-1">
-                        <li v-for="rec in diagnosisResult.recommendations" :key="rec">{{rec}}</li>
-                    </ul>
-                </div>
-                <button class="btn btn-sm btn-outline-secondary mt-2" @click="diagnosisResult = null">
-                    关闭
-                </button>
-            </div>
+            </section>
 
-            <div class="row align-items-center mb-3">
-                <div class="col-md-4">
-                    <select v-model="selectedInterface" class="form-select" @change="loadAllStats" v-cloak>
-                        <option v-for="interface in interfaces" :key="interface" :value="interface">
-                            {{interface}}
-                        </option>
-                    </select>
-                </div>
-                <div class="col-md-8">
-                    <p class="text-muted mb-0 mt-2 mt-md-0" v-cloak>
-                        当前选择的网络接口: {{selectedInterface}}
-                    </p>
-                </div>
-            </div>
-
-            <!-- 新增：缓存状态和系统性能显示 -->
-            <div class="row mb-3" v-cloak>
-                <div class="col-md-6">
-                    <div class="card">
+            <section class="row mb-3" aria-label="运行概况" v-cloak>
+                <div class="col-md-6 mb-3 mb-md-0">
+                    <div class="card h-100" :aria-busy="cacheStatsLoading ? 'true' : 'false'">
                         <div class="card-header py-2">
-                            <h6 class="card-title mb-0">缓存状态</h6>
+                            <h2 class="h6 card-title mb-0">缓存状态</h2>
                         </div>
                         <div class="card-body py-2">
-                            <div class="row text-center">
-                                <div class="col-3">
-                                    <div class="small text-muted">命中率</div>
-                                    <div class="fw-bold" :class="cacheHitRateGood ? 'text-success' : 'text-warning'">{{cacheStats.hitRate}}</div>
+                            <dl class="row text-center mb-0 status-grid">
+                                <div class="col-4">
+                                    <dt class="small text-muted">命中率</dt>
+                                    <dd class="fw-bold mb-0" :class="cacheHitRateGood ? 'status-ok' : 'status-warning'">
+                                        {{cacheStats.hitRate}}
+                                    </dd>
                                 </div>
-                                <div class="col-3">
-                                    <div class="small text-muted">缓存条目</div>
-                                    <div class="fw-bold">{{cacheStats.size}}/{{cacheStats.maxSize}}</div>
+                                <div class="col-4">
+                                    <dt class="small text-muted">缓存条目</dt>
+                                    <dd class="fw-bold mb-0">{{cacheStats.size}}/{{cacheStats.maxSize}}</dd>
                                 </div>
-                                <div class="col-3">
-                                    <div class="small text-muted">内存使用</div>
-                                    <div class="fw-bold">{{cacheStats.memoryUsage}}</div>
+                                <div class="col-4">
+                                    <dt class="small text-muted">内存使用</dt>
+                                    <dd class="fw-bold mb-0">{{cacheStats.memoryUsage}}</dd>
                                 </div>
-                                <div class="col-3">
-                                    <button class="btn btn-sm btn-outline-secondary" @click="clearCache" title="清空缓存">
-                                        <i class="bi bi-trash"></i>
-                                    </button>
-                                </div>
-                            </div>
+                            </dl>
                         </div>
                     </div>
                 </div>
+
                 <div class="col-md-6">
-                    <div class="card">
+                    <div class="card h-100">
                         <div class="card-header py-2">
-                            <h6 class="card-title mb-0">系统性能</h6>
+                            <h2 class="h6 card-title mb-0">页面请求性能</h2>
                         </div>
                         <div class="card-body py-2">
-                            <div class="row text-center">
+                            <dl class="row text-center mb-0 status-grid">
                                 <div class="col-4">
-                                    <div class="small text-muted">响应时间</div>
-                                    <div class="fw-bold" :class="performance.lastResponseTime < 100 ? 'text-success' : 'text-warning'">{{performance.lastResponseTime}}ms</div>
+                                    <dt class="small text-muted">最近响应</dt>
+                                    <dd
+                                        class="fw-bold mb-0"
+                                        :class="performance.lastResponseTime === null || performance.lastResponseTime < 100 ? 'status-ok' : 'status-warning'"
+                                    >
+                                        {{performance.lastResponseTime === null ? '—' : `${performance.lastResponseTime}ms`}}
+                                    </dd>
                                 </div>
                                 <div class="col-4">
-                                    <div class="small text-muted">平均响应</div>
-                                    <div class="fw-bold">{{performance.averageResponseTime.toFixed(0)}}ms</div>
+                                    <dt class="small text-muted">平均响应</dt>
+                                    <dd class="fw-bold mb-0">{{performance.averageResponseTime.toFixed(0)}}ms</dd>
                                 </div>
                                 <div class="col-4">
-                                    <div class="small text-muted">请求次数</div>
-                                    <div class="fw-bold">{{performance.requestCount}}</div>
+                                    <dt class="small text-muted">成功请求</dt>
+                                    <dd class="fw-bold mb-0">{{performance.requestCount}}</dd>
                                 </div>
-                            </div>
+                            </dl>
                         </div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <div class="card mb-3" v-cloak>
+            <section class="card mb-3 date-query" :aria-busy="dateRangeStats.loading ? 'true' : 'false'" aria-labelledby="date-range-heading" v-cloak>
                 <div class="card-header py-2">
-                    <h6 class="mb-0">指定日期统计数据按天查询</h6>
+                    <h2 id="date-range-heading" class="h6 mb-0">指定日期统计数据按天查询</h2>
                 </div>
                 <div class="card-body py-2">
                     <div class="row g-2 align-items-end">
                         <div class="col-md-3">
-                            <label for="startDate" class="form-label small mb-1">开始日期</label>
-                            <input type="date" class="form-control form-control-sm" id="startDate" v-model="dateRange.start">
+                            <label for="startDate" class="form-label small">开始日期</label>
+                            <input id="startDate" v-model="dateRange.start" type="date" class="form-control form-control-sm">
                         </div>
                         <div class="col-md-3">
-                            <label for="endDate" class="form-label small mb-1">结束日期</label>
-                            <input type="date" class="form-control form-control-sm" id="endDate" v-model="dateRange.end">
+                            <label for="endDate" class="form-label small">结束日期</label>
+                            <input id="endDate" v-model="dateRange.end" type="date" class="form-control form-control-sm">
                         </div>
                         <div class="col-md-2">
-                            <button type="button" class="btn btn-primary btn-sm w-100" @click="queryDateRange" :disabled="!isDateRangeValid">
-                                查询
+                            <button
+                                type="button"
+                                class="btn btn-primary btn-sm w-100"
+                                :disabled="!isDateRangeValid || dateRangeStats.loading"
+                                @click="queryDateRange"
+                            >
+                                {{dateRangeStats.loading ? '查询中…' : '查询'}}
                             </button>
                         </div>
-                        <div class="col-md-2" v-if="dateRangeStats.data.length">
+                        <div class="col-md-2" v-if="dateRangeStats.data.length || dateRangeStats.error">
                             <button type="button" class="btn btn-outline-secondary btn-sm w-100" @click="clearDateRangeStats">
                                 清除
                             </button>
                         </div>
                     </div>
-                    
-                    <!-- 查询结果显示 -->
+
+                    <p v-if="dateRangeStats.error" class="data-error mt-3 mb-0" role="alert">
+                        {{dateRangeStats.error}}
+                    </p>
                     <div v-if="dateRangeStats.data.length" class="mt-3">
-                        <!-- 图表显示 -->
-                        <div class="chart-container" style="height:180px;margin-bottom:15px;">
-                            <canvas ref="dateRangeChart" style="width:100%;height:100%;"></canvas>
+                        <div class="chart-container chart-short">
+                            <canvas ref="dateRangeChart" aria-hidden="true"></canvas>
                         </div>
-                        <!-- 表格显示 -->
-                        <div v-html="renderTableHtml(formatTableDataUnified(dateRangeStats.data, dateRangeStats.unit, dateRangeStats.factor), dateRangeStats.unit)"></div>
+                        <div
+                            class="table-responsive data-table-region"
+                            tabindex="0"
+                            aria-label="日期范围统计表"
+                            v-html="renderTableHtml(dateRangeStats.data, dateRangeStats.unit, dateRangeStats.factor, '日期范围统计')"
+                        ></div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <div class="row" v-cloak>
-                <div class="col-md-12 mb-4">
-                    <div class="card" :class="{ loading: realtimeStats.loading }">
+            <section class="row" aria-label="流量统计" v-cloak>
+                <div class="col-12 mb-4">
+                    <article class="card" :class="{ loading: realtimeStats.loading }" :aria-busy="realtimeStats.loading ? 'true' : 'false'">
                         <div class="card-header">
-                            <h5 class="card-title mb-0">实时统计 每5秒刷新</h5>
+                            <h2 class="h5 card-title mb-0">实时统计 <span class="heading-note">每 5 秒刷新</span></h2>
                         </div>
                         <div class="card-body">
-                            <!-- 实时流量图表 -->
-                            <div class="chart-container" style="height:200px;margin-bottom:15px;">
-                                <canvas ref="realtimeChart" style="width:100%;height:100%;"></canvas>
+                            <p v-if="realtimeStats.error" class="data-error" role="alert">{{realtimeStats.error}}</p>
+                            <div class="chart-container chart-realtime">
+                                <canvas ref="realtimeChart" aria-hidden="true"></canvas>
                             </div>
-                            <!-- 实时流量表格 -->
-                            <div ref="realtimeTable" style="max-height:300px;overflow-y:auto;"></div>
+                            <div
+                                class="table-responsive data-table-region realtime-table-region"
+                                tabindex="0"
+                                aria-label="实时流量统计表"
+                                v-html="realtimeTableHtml"
+                            ></div>
                         </div>
-                    </div>
+                    </article>
                 </div>
 
-                <div class="col-md-12 mb-4">
-                    <div class="card" :class="{ loading: minuteStats.loading }">
+                <div class="col-12 mb-4">
+                    <article class="card" :class="{ loading: minuteStats.loading }" :aria-busy="minuteStats.loading ? 'true' : 'false'">
                         <div class="card-header">
-                            <h5 class="card-title mb-0">分钟统计</h5>
+                            <h2 class="h5 card-title mb-0">分钟统计</h2>
                         </div>
                         <div class="card-body">
-                            <div class="chart-container" style="height:180px;">
-                                <canvas ref="minuteChart" style="width:100%;height:100%;"></canvas>
-                            </div>
-                            <div v-html="renderTableHtml(formatTableDataUnified(minuteStats.data, minuteStats.unit, minuteStats.factor), minuteStats.unit)"></div>
+                            <p v-if="minuteStats.error" class="data-error" role="alert">{{minuteStats.error}}</p>
+                            <template v-else-if="minuteStats.data.length">
+                                <div class="chart-container chart-short">
+                                    <canvas ref="minuteChart" aria-hidden="true"></canvas>
+                                </div>
+                                <div
+                                    class="table-responsive data-table-region"
+                                    tabindex="0"
+                                    aria-label="分钟流量统计表"
+                                    v-html="renderTableHtml(minuteStats.data, minuteStats.unit, minuteStats.factor, '分钟流量统计')"
+                                ></div>
+                            </template>
+                            <p v-else-if="!minuteStats.loading" class="data-empty mb-0">暂无分钟统计数据</p>
                         </div>
-                    </div>
+                    </article>
                 </div>
 
-                <div class="col-md-6 mb-4" v-for="(stat, index) in stats" :key="index">
-                    <div class="card" :class="{ loading: stat.loading }">
+                <div class="col-md-6 mb-4" v-for="(stat, index) in stats" :key="stat.period">
+                    <article class="card h-100" :class="{ loading: stat.loading }" :aria-busy="stat.loading ? 'true' : 'false'">
                         <div class="card-header">
-                            <h5 class="card-title mb-0">{{stat.title}}</h5>
+                            <h2 class="h5 card-title mb-0">{{stat.title}}</h2>
                         </div>
                         <div class="card-body">
-                            <div class="chart-container" :style="stat.period === 'y' ? 'height:320px;' : 'height:180px;'">
-                                <canvas :ref="'statChart' + index" style="width:100%;height:100%;"></canvas>
-                            </div>
-                            <div v-html="renderTableHtml(formatTableDataUnified(stat.data, stat.unit, stat.factor), stat.unit)"></div>
+                            <p v-if="stat.error" class="data-error" role="alert">{{stat.error}}</p>
+                            <template v-else-if="stat.data.length">
+                                <div class="chart-container" :class="stat.period === 'y' ? 'chart-year' : 'chart-short'">
+                                    <canvas :ref="`statChart${index}`" aria-hidden="true"></canvas>
+                                </div>
+                                <div
+                                    class="table-responsive data-table-region"
+                                    tabindex="0"
+                                    :aria-label="`${stat.title}表`"
+                                    v-html="renderTableHtml(stat.data, stat.unit, stat.factor, stat.title)"
+                                ></div>
+                            </template>
+                            <p v-else-if="!stat.loading" class="data-empty mb-0">暂无{{stat.title}}数据</p>
                         </div>
+                    </article>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer" role="contentinfo">
+            <div class="container">
+                <div class="footer-content">
+                    <div class="footer-brand">
+                        <span class="footer-text">FlowMaster</span>
+                        <span v-if="version" class="version-badge" v-cloak>v{{version}}</span>
+                        <span class="copyright-text">© {{currentYear}} by
+                            <a href="https://www.zhoujie218.top" target="_blank" rel="noopener noreferrer" class="author-link">zhoujie218</a>
+                        </span>
                     </div>
+                    <a href="https://github.com/vbskycn/FlowMaster" target="_blank" rel="noopener noreferrer" class="github-link">
+                        GitHub
+                    </a>
                 </div>
             </div>
-    </header>
-
-    <main role="main">
-        <!-- ... 原有的主要内容 ... -->
-    </main>
-
-    <footer class="footer" role="contentinfo">
-        <div class="container">
-            <div class="footer-content">
-                <div class="footer-brand">
-                    <span class="footer-text">FlowMaster</span>
-                    <span class="version-badge ms-2" v-cloak>v{{version}}</span>
-                    <span class="copyright-text ms-3">© 2025 by 
-                        <a href="https://www.zhoujie218.top" target="_blank" class="author-link">zhoujie218</a>
-                    </span>
-                </div>
-                <a href="https://github.com/vbskycn/FlowMaster" target="_blank" class="github-link">
-                    <i class="bi bi-github"></i> GitHub
-                </a>
-            </div>
-        </div>
-    </footer>
+        </footer>
     </div>
-
-    <!-- 使用稳定版本的 Bootstrap Icons CDN -->
-    
-
-    <!-- Chart.js CDN -->
-    
-
-    <!-- 更新页脚样式 -->
-    <!-- 已分离至main.css和dark-theme.css，无需保留内联样式 -->
-
-    <script>
-    // ChartRenderScheduler: 统一调度所有图表渲染
-    class ChartRenderScheduler {
-        constructor() {
-            this.tasks = new Map(); // key: chartKey, value: {ref, getData, renderFunc, retry}
-            this.retryDelay = 120;
-            this.maxRetry = 30;
-        }
-        requestRender(chartKey, ref, getData, renderFunc, retry = 0) {
-            this.tasks.set(chartKey, {ref, getData, renderFunc, retry});
-            this._tryRender(chartKey);
-        }
-        _tryRender(chartKey) {
-            const task = this.tasks.get(chartKey);
-            if (!task) return;
-            let el = typeof task.ref === 'function' ? task.ref() : task.ref;
-            if (Array.isArray(el)) el = el[0];
-            const data = typeof task.getData === 'function' ? task.getData() : task.getData;
-            if (!el || !el.getContext) {
-                if (task.retry < this.maxRetry) {
-                    setTimeout(() => this._tryRender(chartKey), this.retryDelay);
-                    task.retry++;
-                }
-                return;
-            }
-            if (!data || (Array.isArray(data) && data.length === 0)) {
-                // 数据未就绪，等待数据
-                return;
-            }
-            // destroy 旧实例
-            if (el._chartInstance && typeof el._chartInstance.destroy === 'function') {
-                el._chartInstance.destroy();
-            }
-            // render 新实例
-            el._chartInstance = task.renderFunc(el, data);
-            this.tasks.delete(chartKey);
-        }
-        retryAll() {
-            for (const key of this.tasks.keys()) {
-                this._tryRender(key);
-            }
-        }
-    }
-    const chartScheduler = new ChartRenderScheduler();
-
-        const app = Vue.createApp({
-            data() {
-                return {
-                    interfaces: [],
-                    selectedInterface: 'eth0',
-                    error: null,
-                    realtimeStats: { data: [], loading: false },
-                    minuteStats: { data: [], loading: false },
-                    stats: [
-                        { period: 'h', title: '小时统计', data: [], loading: false },
-                        { period: 'd', title: '日统计', data: [], loading: false },
-                        { period: 'm', title: '月统计', data: [], loading: false },
-                        { period: 'y', title: '年统计', data: [], loading: false }
-                    ],
-                    autoRefresh: true,
-                    refreshInterval: null,
-                    lastUpdateTime: '',
-                    version: '',
-                    dateRange: {
-                        start: '',
-                        end: ''
-                    },
-                    dateRangeStats: {
-                        data: [],
-                        loading: false,
-                        unit: 'GiB',
-                        factor: 1
-                    },
-                    isDarkMode: false,
-                    realtimeData: [], // 存储最近20条实时数据记录
-                    lastRealtimeTimestamp: 0,
-                    activeRealtimeInterface: '',
-                    debugMode: false, // 调试模式开关
-                    // 新增：缓存状态相关字段
-                    cacheStats: {
-                        hits: 0,
-                        misses: 0,
-                        hitRate: '0%',
-                        size: 0,
-                        maxSize: 100,
-                        memoryUsage: '0MB',
-                        maxMemory: '50MB'
-                    },
-                    systemMemory: {
-                        rss: '0MB',
-                        heapTotal: '0MB',
-                        heapUsed: '0MB',
-                        external: '0MB',
-                        cacheMemory: '0MB'
-                    },
-                    performance: {
-                        lastResponseTime: 0,
-                        averageResponseTime: 0,
-                        requestCount: 0
-                    },
-                    diagnosisResult: null, // 新增：诊断结果
-                    intersectionObservers: []
-                }
-            },
-            computed: {
-                isDateRangeValid() {
-                    return this.dateRange.start && this.dateRange.end && 
-                           this.dateRange.start <= this.dateRange.end;
-                },
-                cacheHitRateGood() {
-                    return Number.parseFloat(this.cacheStats.hitRate) >= 50;
-                }
-            },
-            methods: {
-                apiGet(url, config) {
-                    return this.measurePerformance(() => axios.get(url, config));
-                },
-                apiPost(url, data, config) {
-                    return this.measurePerformance(() => axios.post(url, data, config));
-                },
-                async loadInterfaces() {
-                    try {
-                        const response = await this.apiGet('/api/interfaces');
-                        // 对接口列表进行排序
-                        this.interfaces = response.data.interfaces.sort((a, b) => {
-                            // 定义接口优先级函数
-                            const getPriority = (name) => {
-                                // 常见物理网卡接口优先
-                                if (name.startsWith('eth')) return 1;
-                                if (name.startsWith('ens')) return 2;
-                                if (name.startsWith('enp')) return 3;
-                                // 其他常见网卡接口
-                                if (name.startsWith('wlan')) return 10;
-                                if (name.startsWith('bond')) return 11;
-                                if (name.startsWith('br-')) return 12;
-                                // 虚拟和容器接口靠后
-                                if (name.startsWith('docker')) return 100;
-                                if (name.includes('veth') || 
-                                    name.includes('virbr') || 
-                                    name.includes('tun') || 
-                                    name.includes('tap')) return 101;
-                                return 50; // 其他接口
-                            };
-                            
-                            const priorityA = getPriority(a);
-                            const priorityB = getPriority(b);
-                            
-                            // 首先按优先级排序
-                            if (priorityA !== priorityB) {
-                                return priorityA - priorityB;
-                            }
-                            
-                            // 优先级相同时按字母顺序排序
-                            return a.localeCompare(b);
-                        });
-
-                        // 选择第一个接口作为默认值
-                        if (this.interfaces.length > 0) {
-                            this.selectedInterface = this.interfaces[0];
-                            this.loadAllStats();
-                        } else {
-                            // 降级显示：如果没有找到接口，显示默认接口
-                            this.interfaces = ['eth0'];
-                            this.selectedInterface = 'eth0';
-                            this.error = '未找到网络接口，使用默认接口eth0。请检查vnstat是否正确安装和配置。';
-                        }
-                    } catch (error) {
-                        const errorMsg = error.response?.data?.error || error.message;
-                        this.error = `无法获取网络接口列表: ${errorMsg}`;
-                        console.error('接口列表加载失败:', error);
-                        
-                        // 如果是缓存相关错误，提供特殊提示
-                        if (errorMsg.includes('cache') || errorMsg.includes('缓存')) {
-                            this.error += ' (缓存系统可能存在问题)';
-                        }
-                        
-                        // 降级显示：使用默认接口
-                        this.interfaces = ['eth0'];
-                        this.selectedInterface = 'eth0';
-                        
-                        // 自动运行诊断
-                        setTimeout(() => {
-                            this.runDiagnosis();
-                        }, 1000);
-                    }
-                },
-                parseStatData(data, unit = 'MiB') {
-                    // 优化：预分配数组大小，减少动态扩容
-                    const labels = [];
-                    const rx = [];
-                    const tx = [];
-                    let headerIdx = -1;
-                    let rxIdx = -1, txIdx = -1, labelIdx = 0;
-                    let started = false;
-                    
-                    // 优化：使用for循环替代forEach，性能更好
-                    for (let i = 0; i < data.length; i++) {
-                        const line = data[i].trim();
-                        if (!line) continue;
-                        if (line.includes('---')) { started = true; continue; }
-                        if (!started) {
-                            // 识别表头
-                            headerIdx = i;
-                            const header = data[i].replace(/\s+/g, ' ').trim().split(' ');
-                            rxIdx = header.findIndex(h => h.startsWith('接收'));
-                            txIdx = header.findIndex(h => h.startsWith('发送'));
-                            labelIdx = 0; // 通常第一个是时间/日期
-                            continue;
-                        }
-                        // 解析数据行
-                        const cols = line.replace(/\s+/g, ' ').trim().split(' ');
-                        if (cols.length < Math.max(rxIdx, txIdx) + 1) continue;
-                        // 跳过合计/平均/预计等行
-                        if (/总计|平均|预计|total|avg|est|sum/.test(cols[labelIdx])) continue;
-                        labels.push(cols[labelIdx]);
-                        rx.push(this.extractPureNumber(cols[rxIdx]));
-                        tx.push(this.extractPureNumber(cols[txIdx]));
-                    }
-                    return { labels, rx, tx };
-                },
-                extractPureNumber(val) {
-                    // 优化：使用更高效的正则匹配
-                    if (!val) return 0;
-                    const match = val.match(/([\d.]+)/);
-                    return match ? parseFloat(match[1]) : 0;
-                },
-                // 优化：格式化表格数据为统一单位且移除原始单位
-                formatTableDataUnified(data, unit, factor) {
-                    // 优化：预分配数组大小
-                    const result = new Array(data.length);
-                    let started = false;
-                    let rxIdx = -1, txIdx = -1, totalIdx = -1;
-                    
-                    for (let i = 0; i < data.length; i++) {
-                        let line = data[i];
-                        if (!started && line.includes('---')) { 
-                            started = true; 
-                            result[i] = line; 
-                            continue; 
-                        }
-                        if (!started) {
-                            // 处理表头，标注单位
-                            let header = line.replace(/\s+/g, ' ').trim().split(' ');
-                            rxIdx = header.findIndex(h => h.startsWith('接收') || h.toLowerCase() === 'rx');
-                            txIdx = header.findIndex(h => h.startsWith('发送') || h.toLowerCase() === 'tx');
-                            totalIdx = header.findIndex(h => h.startsWith('总计') || h.toLowerCase() === 'total');
-                            if (rxIdx !== -1 && !header[rxIdx].includes('(')) header[rxIdx] += `(${unit})`;
-                            if (txIdx !== -1 && !header[txIdx].includes('(')) header[txIdx] += `(${unit})`;
-                            if (totalIdx !== -1 && !header[totalIdx].includes('(')) header[totalIdx] += `(${unit})`;
-                            result[i] = header.join(' ');
-                            continue;
-                        }
-                        // 只处理数据行
-                        let cols = line.replace(/\s+/g, ' ').trim().split(' ');
-                        if (cols.length < Math.max(rxIdx, txIdx, totalIdx) + 1) { 
-                            result[i] = line; 
-                            continue; 
-                        }
-                        // 跳过合计/平均/预计等行
-                        if (/总计|平均|预计|total|avg|est|sum/.test(cols[0])) { 
-                            result[i] = line; 
-                            continue; 
-                        }
-                        // 格式化数值并移除原单位
-                        if (rxIdx !== -1) cols[rxIdx] = this.formatValueToUnitNoUnit(cols[rxIdx], factor);
-                        if (txIdx !== -1) cols[txIdx] = this.formatValueToUnitNoUnit(cols[txIdx], factor);
-                        if (totalIdx !== -1) cols[totalIdx] = this.formatValueToUnitNoUnit(cols[totalIdx], factor);
-                        result[i] = cols.join(' ');
-                    }
-                    return result;
-                },
-                formatValueToUnitNoUnit(val, factor) {
-                    // 优化：使用更高效的正则匹配
-                    const match = val.match(/([\d.]+)/);
-                    if (!match) return val;
-                    const num = parseFloat(match[1]);
-                    return isNaN(num) ? val : (num * factor).toFixed(2);
-                },
-                // 优化后的 renderMinuteChart
-                renderMinuteChart() {
-                    chartScheduler.requestRender(
-                        'minuteChart',
-                        () => this.$refs.minuteChart,
-                        () => this.minuteStats.data,
-                        (ctx, data) => {
-                            ctx.height = 180;
-                            const parent = ctx.parentElement;
-                            if (parent) ctx.width = parent.clientWidth;
-                            const unit = this.minuteStats.unit || 'MiB';
-                            const { labels, rx, tx } = this.parseStatData(data, unit);
-                            if (!labels.length) return null;
-                            return new Chart(ctx, {
-                                type: 'line',
-                                data: {
-                                    labels,
-                                    datasets: [
-                                        { label: `接收(${unit})`, data: rx, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.08)', tension: 0.3, fill: true },
-                                        { label: `发送(${unit})`, data: tx, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.08)', tension: 0.3, fill: true }
-                                    ]
-                                },
-                                options: {
-                                    responsive: true,
-                                    plugins: { legend: { display: true }, tooltip: { enabled: true } },
-                                    scales: { y: { beginAtZero: true, title: { display: true, text: unit } } }
-                                }
-                            });
-                        }
-                    );
-                },
-                // 优化后的 renderStatChart
-                renderStatChart(index) {
-                    chartScheduler.requestRender(
-                        `statChart${index}`,
-                        () => this.$refs['statChart' + index],
-                        () => this.stats[index].data,
-                        (ctx, data) => {
-                            const period = this.stats[index].period;
-                            ctx.height = period === 'y' ? 320 : 180;
-                            const parent = ctx.parentElement;
-                            if (parent) ctx.width = parent.clientWidth;
-                            let unit = 'MiB';
-                            if (period === 'd' || period === 'm') unit = 'GiB';
-                            if (period === 'y') unit = 'TiB';
-                            const { labels, rx, tx } = this.parseStatData(data, unit);
-                            if (!labels.length) return null;
-                            const chartType = period === 'y' ? 'bar' : 'line';
-                            return new Chart(ctx, {
-                                type: chartType,
-                                data: {
-                                    labels,
-                                    datasets: [
-                                        { label: `接收(${unit})`, data: rx, backgroundColor: period === 'y' ? '#2563eb' : 'rgba(37,99,235,0.08)', borderColor: '#2563eb', tension: 0.3, fill: period !== 'y' },
-                                        { label: `发送(${unit})`, data: tx, backgroundColor: period === 'y' ? '#fb923c' : 'rgba(251,146,60,0.08)', borderColor: '#fb923c', tension: 0.3, fill: period !== 'y' }
-                                    ]
-                                },
-                                options: {
-                                    responsive: true,
-                                    plugins: { legend: { display: true }, tooltip: { enabled: true } },
-                                    scales: { y: { beginAtZero: true, title: { display: true, text: unit } } }
-                                }
-                            });
-                        }
-                    );
-                },
-                async loadStats(stat, index) {
-                    stat.loading = true;
-                    try {
-                        const response = await this.apiGet(`/api/stats/${this.selectedInterface}/${stat.period}`);
-                        stat.data = response.data.data;
-                        const units = { h: 'MiB', d: 'GiB', m: 'GiB', y: 'TiB' };
-                        stat.unit = units[stat.period] || 'MiB';
-                        stat.factor = 1;
-                        this.$nextTick(() => this.renderStatChart(index));
-                    } catch (error) {
-                        stat.data = ['错误: ' + (error.response?.data?.error || error.message)];
-                    }
-                    stat.loading = false;
-                },
-                async loadRealtimeStats() {
-                    this.realtimeStats.loading = true;
-                    try {
-                        if (this.debugMode) console.log('开始加载实时统计数据...');
-                        const response = await this.apiGet(`/api/stats/${this.selectedInterface}/l`);
-                        
-                        // 解析实时数据
-                        const rawData = response.data.data;
-                        if (this.debugMode) console.log('收到原始实时数据:', rawData);
-                        
-                        const responseTimestamp = response.data.timestamp || Date.now();
-                        const parsedData = this.parseRealtimeData(rawData, responseTimestamp);
-                        
-                        if (parsedData && responseTimestamp !== this.lastRealtimeTimestamp) {
-                            // 添加到历史数据，保持最近20条
-                            this.realtimeData.push(parsedData);
-                            if (this.realtimeData.length > 20) {
-                                this.realtimeData.shift();
-                            }
-                            this.lastRealtimeTimestamp = responseTimestamp;
-                            
-                            if (this.debugMode) console.log('实时数据解析成功，当前历史数据条数:', this.realtimeData.length);
-                            
-                            // 更新图表和表格
-                            this.$nextTick(() => {
-                                this.renderRealtimeChart();
-                                this.renderRealtimeTable();
-                            });
-                        } else {
-                            if (this.debugMode) console.warn('实时数据解析失败，但继续显示原始数据');
-                        }
-                        
-                        // 保持原有数据格式用于兼容
-                        this.realtimeStats.data = rawData.filter(line => line.trim());
-                        
-                        // 确保图表和表格始终更新
-                        this.$nextTick(() => {
-                            this.renderRealtimeChart();
-                            this.renderRealtimeTable();
-                        });
-                        
-                    } catch (error) {
-                        console.error('加载实时统计数据失败:', error);
-                        this.realtimeStats.data = ['错误: ' + (error.response?.data?.error || error.message)];
-                        
-                        // 即使出错也要尝试渲染
-                        this.$nextTick(() => {
-                            this.renderRealtimeChart();
-                            this.renderRealtimeTable();
-                        });
-                    }
-                    this.realtimeStats.loading = false;
-                },
-                parseRealtimeData(rawData, timestamp = Date.now()) {
-                    // 解析实时数据，提取速度和数据包信息
-                    const receiveLine = rawData.find(line => line.includes('接收'));
-                    const sendLine = rawData.find(line => line.includes('发送'));
-                    
-                    if (!receiveLine || !sendLine) {
-                        if (this.debugMode) console.warn('实时数据解析失败：未找到接收或发送行', rawData);
-                        return null;
-                    }
-                    // 增强的正则表达式，支持多种格式
-                    // 格式1: 12345                   // 格式2: 123.45 kb/s 1234 packets/s
-                    const speedPattern = /(\d+\.?\d*)\s*([kmg]?b\/秒).*?(\d+)\s*(数据包|packets|包|p)\/s/i;
-                    // 解析接收数据
-                    const receiveMatch = receiveLine.match(speedPattern);
-                    // 解析发送数据
-                    const sendMatch = sendLine.match(speedPattern);
-                    if (!receiveMatch || !sendMatch) {
-                        if (this.debugMode) console.warn('实时数据解析失败：正则匹配失败', {
-                            receiveLine,
-                            sendLine,
-                            receiveMatch,
-                            sendMatch
-                        });
-                        return null;
-                    }
-                    const now = new Date(timestamp);
-                    // 统一转换为Mb/s
-                    const receiveSpeedMb = this.convertSpeedToUnit(parseFloat(receiveMatch[1]), receiveMatch[2]);
-                    const sendSpeedMb = this.convertSpeedToUnit(parseFloat(sendMatch[1]), sendMatch[2]);
-                    const parsedData = {
-                        time: now.toLocaleTimeString(),
-                        timestamp,
-                        receiveSpeed: receiveSpeedMb,
-                        receiveSpeedUnit: 'Mb/秒',
-                        receivePackets: parseInt(receiveMatch[3]),
-                        sendSpeed: sendSpeedMb,
-                        sendSpeedUnit: 'Mb/秒',
-                        sendPackets: parseInt(sendMatch[3])
-                    };
-                    // 验证解析结果
-                    if (isNaN(parsedData.receiveSpeed) || isNaN(parsedData.sendSpeed) || 
-                        isNaN(parsedData.receivePackets) || isNaN(parsedData.sendPackets)) {
-                        if (this.debugMode) console.warn('实时数据解析失败：数值转换失败', parsedData);
-                        return null;
-                    }
-                    if (this.debugMode) console.log('实时数据解析成功:', parsedData);
-                    return parsedData;
-                },
-                renderRealtimeChart() {
-                    chartScheduler.requestRender(
-                        '_realtimeChart',
-                        () => this.$refs.realtimeChart,
-                        () => this.realtimeData,
-                        (ctx, data) => {
-                            ctx.height = 200;
-                            const parent = ctx.parentElement;
-                            if (parent) ctx.width = parent.clientWidth;
-                            const oneMinuteAgo = Date.now() - 1 * 60 * 1000;
-                            const chartData = data.filter(item => item.timestamp >= oneMinuteAgo);
-                            let labels, receiveSpeeds, sendSpeeds;
-                            if (chartData.length === 0) {
-                                const now = new Date();
-                                labels = [now.toLocaleTimeString()];
-                                receiveSpeeds = [0];
-                                sendSpeeds = [0];
-                            } else {
-                                labels = chartData.map(item => item.time);
-                                receiveSpeeds = chartData.map(item => item.receiveSpeed);
-                                sendSpeeds = chartData.map(item => item.sendSpeed);
-                            }
-                            if (!labels.length) return null;
-                            return new Chart(ctx, {
-                                type: 'line',
-                                data: {
-                                    labels,
-                                    datasets: [
-                                        { label: '接收速度(Mb/秒)', data: receiveSpeeds, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.08)', tension: 0.3, fill: true },
-                                        { label: '发送速度(Mb/秒)', data: sendSpeeds, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.08)', tension: 0.3, fill: true }
-                                    ]
-                                },
-                                options: {
-                                    responsive: true,
-                                    plugins: { legend: { display: true }, tooltip: { enabled: true } },
-                                    scales: { y: { beginAtZero: true, title: { display: true, text: '速度 (Mb/秒)' } } }
-                                }
-                            });
-                        }
-                    );
-                },
-                renderRealtimeTable() {
-                    // 优化：使用DocumentFragment减少DOM操作
-                    const fragment = document.createDocumentFragment();
-                    const container = document.createElement('div');
-                    
-                    // 生成表格HTML
-                    let html = `<div style='font-weight:bold;margin-bottom:4px;'>实时流量统计</div>`;
-                    if (this.realtimeData.length === 0) {
-                        // 显示原始数据作为降级方案
-                        html += `<div style="color:#666;font-style:italic;padding:10px;">暂无实时数据，显示原始数据：</div>`;
-                        if (this.realtimeStats.data && this.realtimeStats.data.length > 0) {
-                            html += `<pre style="font-size:12px;background:#f8f9fa;padding:8px;border-radius:4px;">${this.escapeHtml(this.realtimeStats.data.join('\n'))}</pre>`;
-                        } else {
-                            html += `<div style="color:#999;text-align:center;padding:20px;">暂无数据</div>`;
-                        }
-                    } else {
-                        // 优化：使用数组拼接替代字符串拼接
-                        const tableParts = [];
-                        tableParts.push('<table class="table table-sm table-bordered mb-0" style="font-size:13px;">');
-                        tableParts.push('<thead><tr><th>时间</th><th>接收速度(Mb/秒)</th><th>接收数据包</th><th>发送速度(Mb/秒)</th><th>发送数据包</th></tr></thead>');
-                        tableParts.push('<tbody>');
-                        
-                        // 显示解析后的数据表格
-                        const tableData = this.realtimeData.slice(-8); // 最近8条
-                        const rowParts = [];
-                        
-                        tableData.forEach((item, index) => {
-                            const isLatest = index === tableData.length - 1;
-                            const rowBg = isLatest ? '#e3f2fd' : (index % 2 === 0 ? '#fff' : '#f6f8fa');
-                            const textColor = isLatest ? '#1976d2' : '';
-                            const style = `background:${rowBg};${textColor ? 'color: ' + textColor + ';font-weight:bold;' : ''}`;
-                            
-                            rowParts.push(`<tr style='${style}'>`);
-                            rowParts.push(`<td>${this.escapeHtml(item.time)}</td>`);
-                            rowParts.push(`<td style='color:#2563eb;font-weight:500;'>${item.receiveSpeed.toFixed(2)} Mb/秒</td>`);
-                            rowParts.push(`<td style='color:#2563eb;font-weight:500;'>${item.receivePackets} 包/s</td>`);
-                            rowParts.push(`<td style='color:#fb923c;font-weight:500;'>${item.sendSpeed.toFixed(2)} Mb/秒</td>`);
-                            rowParts.push(`<td style='color:#fb923c;font-weight:500;'>${item.sendPackets} 包/s</td>`);
-                            rowParts.push('</tr>');
-                        });
-                        
-                        tableParts.push(rowParts.join(''));
-                        tableParts.push('</tbody></table>');
-                        html += tableParts.join('');
-                    }
-                    
-                    container.innerHTML = html;
-                    fragment.appendChild(container);
-                    
-                    // 更新表格内容
-                    if (this.$refs.realtimeTable) {
-                        this.$refs.realtimeTable.innerHTML = '';
-                        this.$refs.realtimeTable.appendChild(fragment);
-                    } else {
-                        if (this.debugMode) console.warn('实时表格渲染失败：realtimeTable元素不存在');
-                    }
-                },
-                async loadMinuteStats() {
-                    this.minuteStats.loading = true;
-                    try {
-                        const response = await this.apiGet(`/api/stats/${this.selectedInterface}/5`);
-                        this.minuteStats.data = response.data.data.filter(line => line.trim());
-                        this.minuteStats.unit = 'MiB';
-                        this.minuteStats.factor = 1;
-                        this.$nextTick(() => this.renderMinuteChart());
-                    } catch (error) {
-                        this.minuteStats.data = ['错误: ' + (error.response?.data?.error || error.message)];
-                    }
-                    this.minuteStats.loading = false;
-                },
-                loadAllStats() {
-                    if (this.activeRealtimeInterface !== this.selectedInterface) {
-                        this.realtimeData = [];
-                        this.lastRealtimeTimestamp = 0;
-                        this.activeRealtimeInterface = this.selectedInterface;
-                    }
-                    this.loadRealtimeStats();
-                    this.loadMinuteStats();
-                    this.stats.forEach((stat, idx) => this.loadStats(stat, idx));
-                    this.updateLastUpdateTime();
-                    // 新增：加载缓存和系统状态
-                    this.loadCacheStats();
-                    this.loadSystemMemory();
-                },
-                updateLastUpdateTime() {
-                    const now = new Date();
-                    this.lastUpdateTime = now.toLocaleTimeString();
-                },
-                startAutoRefresh() {
-                    // 清理所有现有定时器
-                    this.clearAllIntervals();
-                    
-                    // 新增：分离定时器
-                    if (this.autoRefresh) {
-                        // 实时数据每5秒刷新
-                        this._realtimeInterval = setInterval(() => {
-                            this.loadRealtimeStats();
-                            this.updateLastUpdateTime();
-                        }, 5000);
-                        // 统计数据、缓存和系统状态每3分钟刷新
-                        this._statsInterval = setInterval(() => {
-                            this.loadMinuteStats();
-                            this.stats.forEach((stat, idx) => this.loadStats(stat, idx));
-                            this.loadCacheStats();
-                            this.loadSystemMemory();
-                        }, 180000);
-                    }
-                },
-                // 清理所有定时器
-                clearAllIntervals() {
-                    if (this.refreshInterval) {
-                        clearInterval(this.refreshInterval);
-                        this.refreshInterval = null;
-                    }
-                    if (this._realtimeInterval) {
-                        clearInterval(this._realtimeInterval);
-                        this._realtimeInterval = null;
-                    }
-                    if (this._statsInterval) {
-                        clearInterval(this._statsInterval);
-                        this._statsInterval = null;
-                    }
-                },
-                async loadVersion() {
-                    try {
-                        const response = await this.apiGet('/api/version');
-                        this.version = response.data.version;
-                    } catch (error) {
-                        console.error('获取版本号失败:', error);
-                    }
-                },
-                async queryDateRange() {
-                    if (!this.isDateRangeValid) return;
-                    
-                    this.dateRangeStats.loading = true;
-                    try {
-                        const response = await this.apiGet(
-                            `/api/stats/${this.selectedInterface}/range/${this.dateRange.start}/${this.dateRange.end}`
-                        );
-                        this.dateRangeStats.data = response.data.data;
-                        
-                        // 后端已经将日期范围数据统一为 GiB。
-                        this.dateRangeStats.unit = 'GiB';
-                        this.dateRangeStats.factor = 1;
-                        
-                        // 渲染图表
-                        this.$nextTick(() => {
-                            this.renderDateRangeChart();
-                        });
-                    } catch (error) {
-                        this.error = '查询失败: ' + (error.response?.data?.error || error.message);
-                    }
-                    this.dateRangeStats.loading = false;
-                },
-                clearDateRangeStats() {
-                    this.dateRangeStats.data = [];
-                    this.dateRange.start = '';
-                    this.dateRange.end = '';
-                    // 清理图表实例
-                    // this.destroyChartInstance('dateRangeChart'); // 不再需要手动销毁
-                },
-                // 新：将格式化后的数据渲染为HTML表格
-                renderTableHtml(data, unit) {
-                    if (!data || data.length === 0) return '';
-                    // 第一行为标题（如 eth0 / 5 minute），单独一行
-                    let html = `<div style='font-weight:bold;margin-bottom:4px;'>${this.escapeHtml(data[0])}</div>`;
-                    // 第二行为表头，严格保证5列：先用|分割，第一个分段再用多空格分割
-                    let headerLine = data[1];
-                    let header = [];
-                    if (headerLine.includes('|')) {
-                        const segs = headerLine.split('|');
-                        header = segs[0].trim().split(/\s{2,}/).map(h => h.trim());
-                        for (let i = 1; i < segs.length; i++) {
-                            if (segs[i].trim()) header.push(segs[i].trim());
-                        }
-                    } else {
-                        header = headerLine.split(/\s{2,}/).map(h => h.trim());
-                    }
-                    // 记录关键列索引
-                    const rxIdx = header.findIndex(h => h.includes('接收'));
-                    const txIdx = header.findIndex(h => h.includes('发送'));
-                    const totalIdx = header.findIndex(h => h.includes('总计'));
-                    const avgIdx = header.findIndex(h => h.includes('平均速率'));
-                    html += '<table class="table table-sm table-bordered mb-0" style="font-size:13px;">';
-                    html += '<thead><tr>' + header.map(h => `<th>${this.escapeHtml(h)}</th>`).join('') + '</tr></thead>';
-                    html += '<tbody>';
-                    // 其余为数据行，分割方式同上
-                    let dataRowIdx = 0;
-                    for (let i = 2; i < data.length; i++) {
-                        let line = data[i];
-                        if (line.includes('---')) continue;
-                        let cols = [];
-                        if (line.includes('|')) {
-                            const segs = line.split('|');
-                            cols = segs[0].trim().split(/\s{2,}/).map(c => c.trim());
-                            for (let j = 1; j < segs.length; j++) {
-                                if (segs[j].trim()) cols.push(segs[j].trim());
-                            }
-                        } else {
-                            cols = line.split(/\s{2,}/).map(c => c.trim());
-                        }
-                        if (cols.length === 1 && !cols[0]) continue;
-                        // 斑马纹背景色
-                        const rowBg = dataRowIdx % 2 === 0 ? '#fff' : '#f6f8fa';
-                        html += `<tr style='background:${rowBg};'>` +
-                            cols.map((c, idx) => {
-                                let style = '';
-                                if (idx === rxIdx) style = 'color:#2563eb;font-weight:500;'; // 现代蓝
-                                if (idx === txIdx) style = 'color:#fb923c;font-weight:500;'; // 现代橙
-                                if (idx === totalIdx) style = 'color:#14b8a6;font-weight:500;'; // 现代青绿
-                                if (idx === avgIdx) style = 'color:#64748b;font-weight:500;'; // 现代蓝灰
-                                return `<td style='${style}'>${this.escapeHtml(c)}</td>`;
-                            }).join('') + '</tr>';
-                        dataRowIdx++;
-                    }
-                    html += '</tbody></table>';
-                    return html;
-                },
-                escapeHtml(value) {
-                    return String(value ?? '').replace(/[&<>'"]/g, character => ({
-                        '&': '&amp;',
-                        '<': '&lt;',
-                        '>': '&gt;',
-                        "'": '&#39;',
-                        '"': '&quot;'
-                    })[character]);
-                },
-                toggleTheme() {
-                    this.isDarkMode = !this.isDarkMode;
-                    document.body.classList.toggle('dark', this.isDarkMode);
-                    localStorage.setItem('theme', this.isDarkMode ? 'dark' : 'light');
-                },
-                toggleDebugMode() {
-                    this.debugMode = !this.debugMode;
-                    localStorage.setItem('debugMode', this.debugMode);
-                },
-                applyThemeFromPreference() {
-                    // 优先用户选择，默认浅色模式
-                    const userTheme = localStorage.getItem('theme');
-                    if (userTheme === 'dark') {
-                        this.isDarkMode = true;
-                        document.body.classList.add('dark');
-                    } else {
-                        // 默认浅色模式，移除系统主题跟随
-                        this.isDarkMode = false;
-                        document.body.classList.remove('dark');
-                    }
-                    // 应用调试模式，默认关闭
-                    const userDebugMode = localStorage.getItem('debugMode');
-                    this.debugMode = (userDebugMode === 'true');
-                },
-                // 新：速度单位统一转换为Mb/秒
-                convertSpeedToUnit(speed, fromUnit) {
-                    // 先统一为b/秒
-                    let speedInBits = speed;
-                    switch((fromUnit||'').toLowerCase()) {
-                        case 'gb/秒':
-                            speedInBits = speed * 1000 * 1000 * 1000;
-                            break;
-                        case 'mb/秒':
-                            speedInBits = speed * 1000 * 1000;
-                            break;
-                        case 'kb/秒':
-                            speedInBits = speed * 1000;
-                            break;
-                        case 'b/秒':
-                        default:
-                            speedInBits = speed;
-                    }
-                    // 再转为Mb/秒
-                    return speedInBits / (1000 * 1000);
-                },
-                // 新增：获取缓存统计信息
-                async loadCacheStats() {
-                    try {
-                        const response = await this.apiGet('/api/cache/stats');
-                        this.cacheStats = response.data;
-                    } catch (error) {
-                        console.error('获取缓存统计失败:', error);
-                    }
-                },
-                // 新增：获取系统内存信息
-                async loadSystemMemory() {
-                    try {
-                        const response = await this.apiGet('/api/system/memory');
-                        this.systemMemory = response.data;
-                    } catch (error) {
-                        console.error('获取系统内存信息失败:', error);
-                    }
-                },
-                // 新增：清空缓存
-                async clearCache() {
-                    try {
-                        await this.apiPost('/api/cache/clear');
-                        this.loadCacheStats(); // 重新加载统计信息
-                        console.log('缓存已清空');
-                    } catch (error) {
-                        console.error('清空缓存失败:', error);
-                    }
-                },
-                // 新增：性能监控包装器
-                async measurePerformance(apiCall) {
-                    const startTime = Date.now();
-                    try {
-                        const result = await apiCall();
-                        const responseTime = Date.now() - startTime;
-                        
-                        // 更新性能统计
-                        this.performance.lastResponseTime = responseTime;
-                        this.performance.requestCount++;
-                        this.performance.averageResponseTime = 
-                            (this.performance.averageResponseTime * (this.performance.requestCount - 1) + responseTime) / this.performance.requestCount;
-                        
-                        return result;
-                    } catch (error) {
-                        const responseTime = Date.now() - startTime;
-                        this.performance.lastResponseTime = responseTime;
-                        throw error;
-                    }
-                },
-                // 新增：检查服务器状态
-                async checkServerStatus() {
-                    try {
-                        const response = await this.apiGet('/api/system/status');
-                        return {
-                            success: true,
-                            data: response.data
-                        };
-                    } catch (error) {
-                        return {
-                            success: false,
-                            error: error.response?.data?.error || error.message,
-                            status: error.response?.status
-                        };
-                    }
-                },
-                // 新增：测试vnstat命令
-                async testVnstat() {
-                    try {
-                        const response = await this.apiGet('/api/test/vnstat');
-                        const results = Object.values(response.data.results || {});
-                        const success = results.length > 0 && results.every(result => result.success === true);
-                        return {
-                            success,
-                            data: response.data,
-                            error: success ? null : '一个或多个 vnstat 检查失败'
-                        };
-                    } catch (error) {
-                        return {
-                            success: false,
-                            error: error.response?.data?.error || error.message
-                        };
-                    }
-                },
-                // 新增：诊断连接问题
-                async diagnoseConnection() {
-                    const diagnosis = {
-                        timestamp: new Date().toISOString(),
-                        serverStatus: null,
-                        vnstatTest: null,
-                        recommendations: []
-                    };
-
-                    // 检查服务器状态
-                    const serverStatus = await this.checkServerStatus();
-                    diagnosis.serverStatus = serverStatus;
-
-                    if (!serverStatus.success) {
-                        diagnosis.recommendations.push('服务器连接失败，请检查服务器是否正在运行');
-                        if (serverStatus.status === 503) {
-                            diagnosis.recommendations.push('服务器返回503错误，可能是vnstat命令未安装或配置错误');
-                        }
-                    } else {
-                        // 如果服务器连接成功，测试vnstat
-                        const vnstatTest = await this.testVnstat();
-                        diagnosis.vnstatTest = vnstatTest;
-
-                        if (!vnstatTest.success) {
-                            diagnosis.recommendations.push('vnstat命令测试失败，请检查vnstat是否正确安装');
-                        } else if (!serverStatus.data.vnstat.available) {
-                            diagnosis.recommendations.push('vnstat命令不可用，请检查系统配置');
-                        }
-                    }
-
-                    return diagnosis;
-                },
-                // 新增：运行诊断
-                async runDiagnosis() {
-                    this.diagnosisResult = await this.diagnoseConnection();
-                },
-                // 新增：渲染指定日期查询结果图表
-                renderDateRangeChart() {
-                    chartScheduler.requestRender(
-                        'dateRangeChart',
-                        () => this.$refs.dateRangeChart,
-                        () => this.dateRangeStats.data,
-                        (ctx, data) => {
-                            ctx.height = 180;
-                            const parent = ctx.parentElement;
-                            if (parent) ctx.width = parent.clientWidth;
-                            const { labels, rx, tx } = this.parseStatData(data, this.dateRangeStats.unit);
-                            if (!labels.length) return null;
-                            return new Chart(ctx, {
-                                type: 'line',
-                                data: {
-                                    labels,
-                                    datasets: [
-                                        { label: `接收(${this.dateRangeStats.unit})`, data: rx, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.08)', tension: 0.3, fill: true },
-                                        { label: `发送(${this.dateRangeStats.unit})`, data: tx, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.08)', tension: 0.3, fill: true }
-                                    ]
-                                },
-                                options: {
-                                    responsive: true,
-                                    plugins: { legend: { display: true }, tooltip: { enabled: true } },
-                                    scales: { y: { beginAtZero: true, title: { display: true, text: this.dateRangeStats.unit } } }
-                                }
-                            });
-                        }
-                    );
-                }
-            },
-            watch: {
-                autoRefresh(newValue) {
-                    if (newValue) {
-                        this.startAutoRefresh();
-                    } else {
-                        this.clearAllIntervals();
-                    }
-                }
-            },
-            mounted() {
-                this.loadInterfaces();
-                this.startAutoRefresh();
-                this.loadVersion();
-                this.applyThemeFromPreference();
-                // 修正：resize事件监听函数保存为实例属性，便于解绑
-                this._resizeHandler = () => chartScheduler.retryAll();
-                window.addEventListener('resize', this._resizeHandler);
-                // 只保留一次 visibilitychange 事件监听
-                this._visibilityHandler = () => {
-                    if (!document.hidden) chartScheduler.retryAll();
-                };
-                document.addEventListener('visibilitychange', this._visibilityHandler);
-                
-                // 新增：IntersectionObserver 机制，统计图表进入视口时自动重绘
-                const chartRefs = [
-                    { ref: 'minuteChart', render: this.renderMinuteChart },
-                    { ref: 'realtimeChart', render: this.renderRealtimeChart },
-                    { ref: 'dateRangeChart', render: this.renderDateRangeChart },
-                    // statChart0-3
-                    ...[0,1,2,3].map(idx => ({ ref: 'statChart' + idx, render: () => this.renderStatChart(idx) }))
-                ];
-                if ('IntersectionObserver' in window) {
-                    chartRefs.forEach(({ ref, render }) => {
-                        this.$nextTick(() => {
-                            let el = this.$refs[ref];
-                            if (Array.isArray(el)) el = el[0];
-                            if (!el) return;
-                            const observer = new IntersectionObserver((entries, obs) => {
-                                entries.forEach(entry => {
-                                    if (entry.isIntersecting) {
-                                        try { render(); } catch(e) {}
-                                        obs.disconnect();
-                                    }
-                                });
-                            }, { threshold: 0.1 });
-                            observer.observe(el);
-                            this.intersectionObservers.push(observer);
-                        });
-                    });
-                }
-                
-                // 测试实时统计功能
-                if (this.debugMode) {
-                    console.log('FlowMaster 实时统计功能测试开始...');
-                    // 模拟测试数据
-                    setTimeout(() => {
-                        if (this.realtimeData.length === 0) {
-                            console.warn('测试：实时数据为空，降级显示机制应该生效');
-                        } else {
-                            console.log('测试：实时数据正常，共', this.realtimeData.length, '条记录');
-                        }
-                    }, 3000);
-                }
-            },
-            beforeUnmount() {
-                // 清理所有定时器
-                this.clearAllIntervals();
-                
-                // 清理所有 Chart.js 实例和观察器。
-                document.querySelectorAll('canvas').forEach(canvas => canvas._chartInstance?.destroy?.());
-                this.intersectionObservers.forEach(observer => observer.disconnect());
-                this.intersectionObservers = [];
-                
-                // 清理数据缓存
-                this.realtimeData = [];
-                this.cacheStats = null;
-                this.systemMemory = null;
-                this.performance = null;
-                this.diagnosisResult = null;
-                
-                // 移除事件监听器
-                if (this._resizeHandler) {
-                    window.removeEventListener('resize', this._resizeHandler);
-                }
-                if (this._visibilityHandler) {
-                    document.removeEventListener('visibilitychange', this._visibilityHandler);
-                }
-                
-            }
-        });
-
-        app.mount('#app');
-        
-        // 新增：性能监控和优化提示
-        window.performanceMark('app-mounted');
-        
-        // 记录应用加载完成时间
-        if (window.performance && window.performance.measure) {
-            window.performance.measure('app-load-time', 'app-start', 'app-mounted');
-            const measure = window.performance.getEntriesByName('app-load-time')[0];
-            console.log(`应用加载完成，耗时: ${measure.duration.toFixed(2)}ms`);
-        }
-        
-        // 性能优化提示
-        console.log('FlowMaster 性能优化已启用:');
-        console.log('- Chart.js统一渲染调度');
-        console.log('- 本地锁定前端依赖');
-        console.log('- 分级自动刷新与资源清理');
-        console.log('- 表格内容HTML转义');
-    </script>
-
 </body>
 </html>
