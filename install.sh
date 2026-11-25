@@ -276,11 +276,185 @@ detect_existing_mode() {
         echo "docker"
         return 0
     fi
-    if [[ -f "$SERVICE_FILE" || -x "$BIN_PATH" || -d "$LEGACY_APP_DIR" ]]; then
+    if [[ -f "$SERVICE_FILE" || -x "$BIN_PATH" || -d "$LEGACY_APP_DIR" || -f /root/.pm2/dump.pm2 ]]; then
         echo "binary"
         return 0
     fi
     echo "none"
+}
+
+# 从 PM2 dump 文件中离线精准剔除旧版 flowmaster 条目，输出 "<移除数> <剩余其他应用数>"
+filter_pm2_dump_offline() {
+    local dump_file="$1"
+    [[ -f "$dump_file" && ! -L "$dump_file" ]] || { echo "0 0"; return 0; }
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$dump_file" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+try:
+    with open(p, "r", encoding="utf-8") as f:
+        arr = json.load(f)
+    if not isinstance(arr, list):
+        print("0 0")
+        sys.exit(0)
+except Exception:
+    print("0 0")
+    sys.exit(0)
+
+kept = []
+removed = 0
+for item in arr:
+    name = str(item.get("name", ""))
+    exec_path = str(item.get("pm_exec_path", ""))
+    if name == "flowmaster" or exec_path.endswith("/flowmaster/server.js"):
+        removed += 1
+    else:
+        kept.append(item)
+
+if removed > 0:
+    tmp = p + ".flowmaster.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(kept, f)
+    os.replace(tmp, p)
+print(f"{removed} {len(kept)}")
+PY
+        return 0
+    fi
+
+    if command -v node >/dev/null 2>&1; then
+        node - "$dump_file" <<'JS'
+const fs = require('fs');
+const p = process.argv[2];
+try {
+  const arr = JSON.parse(fs.readFileSync(p, 'utf8'));
+  if (!Array.isArray(arr)) { console.log('0 0'); process.exit(0); }
+  const kept = [];
+  let removed = 0;
+  for (const item of arr) {
+    const name = String((item && item.name) || '');
+    const execPath = String((item && item.pm_exec_path) || '');
+    if (name === 'flowmaster' || execPath.endsWith('/flowmaster/server.js')) removed++;
+    else kept.push(item);
+  }
+  if (removed > 0) {
+    const tmp = p + '.flowmaster.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(kept));
+    fs.renameSync(tmp, p);
+  }
+  console.log(`${removed} ${kept.length}`);
+} catch (_) {
+  console.log('0 0');
+}
+JS
+        return 0
+    fi
+
+    echo "0 0"
+}
+
+# 安全下线旧版 v1.x Node.js / PM2 托管的 flowmaster 进程，释放监听端口且绝不影响其他 PM2 应用
+retire_legacy_node_and_pm2() {
+    local pm2_home="/root/.pm2"
+    local dump_file="${pm2_home}/dump.pm2"
+    local bak_file="${pm2_home}/dump.pm2.bak"
+    local has_legacy_node=0
+    local pid cmdline
+
+    for proc_dir in /proc/[0-9]*; do
+        [[ -r "${proc_dir}/cmdline" ]] || continue
+        pid="${proc_dir#/proc/}"
+        [[ "$pid" == "$$" ]] && continue
+        cmdline="$(tr '\0' ' ' <"${proc_dir}/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *"node"* && "$cmdline" == *"/flowmaster/server.js"* ]]; then
+            has_legacy_node=1
+            break
+        fi
+    done
+
+    if [[ -f "$dump_file" ]] && grep -q '"flowmaster"\|/flowmaster/server\.js' "$dump_file" 2>/dev/null; then
+        has_legacy_node=1
+    fi
+
+    (( has_legacy_node == 1 )) || return 0
+
+    info "检测到旧版 Node.js/PM2 FlowMaster 实例，正在安全迁移并释放端口..."
+    mkdir -p -- "$BACKUP_ROOT"
+    chmod 0750 "$BACKUP_ROOT"
+
+    local pm2_units=()
+    if command -v systemctl >/dev/null 2>&1; then
+        while IFS= read -r u; do
+            [[ -n "$u" ]] && pm2_units+=("$u")
+        done < <(systemctl list-units --type=service --state=active --no-legend 'pm2-*.service' 2>/dev/null | awk '{print $1}')
+    fi
+
+    local removed_cnt=0 remaining_cnt=0
+    if [[ -f "$dump_file" ]]; then
+        local pm2_bak_dir
+        pm2_bak_dir="${BACKUP_ROOT}/pm2-migration-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p -- "$pm2_bak_dir"
+        chmod 0700 "$pm2_bak_dir"
+        cp -p -- "$dump_file" "${pm2_bak_dir}/dump.pm2" 2>/dev/null || true
+        [[ -f "$bak_file" ]] && cp -p -- "$bak_file" "${pm2_bak_dir}/dump.pm2.bak" 2>/dev/null || true
+
+        read -r removed_cnt remaining_cnt < <(filter_pm2_dump_offline "$dump_file")
+        [[ -f "$bak_file" ]] && filter_pm2_dump_offline "$bak_file" >/dev/null || true
+    fi
+
+    local unit dropin_dir
+    if (( removed_cnt > 0 )); then
+        for unit in "${pm2_units[@]}"; do
+            # 使用运行时临时空 ExecStop 绕开 PM2 5.x pm2 kill TreeKill 阻塞缺陷
+            dropin_dir="/run/systemd/system/${unit}.d"
+            mkdir -p -- "$dropin_dir"
+            printf '[Service]\nExecStop=\n' >"${dropin_dir}/99-flowmaster-stop.conf"
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            if command -v timeout >/dev/null 2>&1; then
+                timeout 15 systemctl stop "$unit" >/dev/null 2>&1 || true
+            else
+                systemctl stop "$unit" >/dev/null 2>&1 || true
+            fi
+            rm -rf -- "$dropin_dir"
+            systemctl daemon-reload >/dev/null 2>&1 || true
+
+            if (( remaining_cnt > 0 )); then
+                info "正在恢复 PM2 中的其余 ${remaining_cnt} 个应用 (${unit})..."
+                systemctl start "$unit" >/dev/null 2>&1 || true
+            else
+                info "PM2 清单中已无其他应用，已停用空载的 ${unit}"
+                systemctl disable "$unit" >/dev/null 2>&1 || true
+            fi
+        done
+    fi
+
+    # 精确清理任何残留的旧版 node .../flowmaster/server.js 进程
+    for proc_dir in /proc/[0-9]*; do
+        [[ -r "${proc_dir}/cmdline" ]] || continue
+        pid="${proc_dir#/proc/}"
+        [[ "$pid" == "$$" ]] && continue
+        cmdline="$(tr '\0' ' ' <"${proc_dir}/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *"node"* && "$cmdline" == *"/flowmaster/server.js"* ]]; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+    done
+
+    for _ in {1..15}; do
+        local still_alive=0
+        for proc_dir in /proc/[0-9]*; do
+            [[ -r "${proc_dir}/cmdline" ]] || continue
+            cmdline="$(tr '\0' ' ' <"${proc_dir}/cmdline" 2>/dev/null || true)"
+            if [[ "$cmdline" == *"node"* && "$cmdline" == *"/flowmaster/server.js"* ]]; then
+                still_alive=1
+                pid="${proc_dir#/proc/}"
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        done
+        (( still_alive == 0 )) && break
+        sleep 0.2
+    done
+
+    log "旧版 Node.js/PM2 FlowMaster 实例已安全下线"
 }
 
 verify_http_health() {
@@ -384,11 +558,14 @@ deploy_or_update_docker() {
         vnstat_args=(-v /var/lib/vnstat:/var/lib/vnstat:ro -e VNSTAT_DB_DIR=/var/lib/vnstat)
     fi
 
-    # 仅在默认标准容器名接管生产部署时，才停用同机旧 systemd 服务以防端口冲突
-    if [[ "$CONTAINER_NAME" == "flowmaster" ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        warn "检测到宿主机 systemd 服务 ${SERVICE_NAME} 正在运行，已停止该服务以交由 Docker 容器接管端口"
-        systemctl stop "$SERVICE_NAME" || true
-        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    # 仅在默认标准容器名接管生产部署时，自动下线同机旧版 PM2/Node 实例与旧 systemd 服务以防端口冲突
+    if [[ "$CONTAINER_NAME" == "flowmaster" ]]; then
+        retire_legacy_node_and_pm2
+        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+            warn "检测到宿主机 systemd 服务 ${SERVICE_NAME} 正在运行，已停止该服务以交由 Docker 容器接管端口"
+            systemctl stop "$SERVICE_NAME" || true
+            systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        fi
     fi
 
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -593,10 +770,17 @@ deploy_or_update_binary() {
 
     ensure_service_user
 
+    # 仅当 /usr/local/bin/flowmaster 是有效的新版 Go 二进制时才保存回滚副本（防止把旧版 v1 同名 Shell 脚本误当成二进制回滚）
     local prev_bin_backup=""
-    if [[ -f "$BIN_PATH" ]]; then
+    if [[ -x "$BIN_PATH" ]] && "$BIN_PATH" --version 2>/dev/null | grep -q '^FlowMaster v[0-9]'; then
         prev_bin_backup="${TMP_DIR}/flowmaster.prev"
         cp -p -- "$BIN_PATH" "$prev_bin_backup"
+    fi
+
+    retire_legacy_node_and_pm2
+    if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"; then
+        warn "检测到同名 Docker 容器 ${CONTAINER_NAME} 正在运行，已停止该容器以交由 systemd 二进制服务接管端口"
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
 
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
@@ -615,10 +799,15 @@ deploy_or_update_binary() {
     fi
 
     if ! verify_http_health "$port" "$actual_bin_ver"; then
-        warn "新版本服务健康检查未通过，正在自动回滚至上一版本..."
+        warn "新版本服务健康检查未通过，正在处理回滚..."
         if [[ -n "$prev_bin_backup" && -f "$prev_bin_backup" ]]; then
             install -m 0755 "$prev_bin_backup" "$BIN_PATH"
             systemctl restart "$SERVICE_NAME" || true
+        else
+            systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+            systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+            rm -f -- "$SERVICE_FILE"
+            systemctl daemon-reload >/dev/null 2>&1 || true
         fi
         fail "systemd 服务启动验证失败，请执行 journalctl -u flowmaster.service -n 50 查看原因"
     fi
