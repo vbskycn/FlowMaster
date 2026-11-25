@@ -107,12 +107,14 @@ func main() {
 	upMgr.ConfigureCluster(cfg.DataDir, cfg.HubURL, cfg.HubToken)
 	hub := cluster.NewHub(cfg, st, engine, quotaSvc, upMgr, logMgr)
 	agent = cluster.NewAgent(cfg, st, engine, quotaSvc, upMgr, logMgr)
+	agent.SetBackupManager(bm)
 
 	engine.Start(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		quotaSvc.CheckAndNotify(ctx)
 	})
+	hub.StartAlertMonitor()
 	agent.Start()
 
 	errCh := make(chan error, 1)
@@ -169,6 +171,7 @@ func main() {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}
+	hub.StopAlertMonitor()
 	agent.Stop()
 	engine.Stop()
 	logMgr.Info("服务已安全退出")

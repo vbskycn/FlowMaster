@@ -361,6 +361,48 @@
               </div>
             </div>
 
+            <!-- 多机集群统一告警托管（配置一次即覆盖全集群所有节点） -->
+            <div class="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-3 text-xs">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="font-semibold text-slate-800 dark:text-slate-100">多机集群统一告警托管（免去几十台节点逐一配置）</div>
+                  <p class="text-[11px] text-slate-500 mt-0.5">开启后由本主控统一巡检全集群节点掉线/恢复、远程流量配额及硬盘/内存高水位，并复用上方 Telegram / Webhook 通道推送。</p>
+                </div>
+                <label class="inline-flex items-center gap-1.5 font-medium cursor-pointer">
+                  <input v-model="alertForm.clusterMonitorEnabled" type="checkbox" class="accent-blue-600 w-4 h-4" />
+                  <span>启用集群统一巡检</span>
+                </label>
+              </div>
+
+              <div v-if="alertForm.clusterMonitorEnabled" class="space-y-3 pt-1">
+                <div class="flex flex-wrap gap-5">
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input v-model="alertForm.notifyNodeOffline" type="checkbox" class="accent-blue-600" />
+                    <span>节点掉线与恢复上线通知</span>
+                  </label>
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input v-model="alertForm.notifyRemoteQuota" type="checkbox" class="accent-blue-600" />
+                    <span>远程节点月度流量配额预警/超限统一推送</span>
+                  </label>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label class="block text-[11px] text-slate-500 mb-1">掉线判定宽限 (秒，默认 60)</label>
+                    <input v-model.number="alertForm.offlineGraceSec" type="number" min="30" max="3600" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+                  </div>
+                  <div>
+                    <label class="block text-[11px] text-slate-500 mb-1">硬盘高水位预警 (% ，0 关闭)</label>
+                    <input v-model.number="alertForm.diskWarnPercent" type="number" min="0" max="99" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+                  </div>
+                  <div>
+                    <label class="block text-[11px] text-slate-500 mb-1">内存高水位预警 (% ，0 关闭)</label>
+                    <input v-model.number="alertForm.memWarnPercent" type="number" min="0" max="99" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="flex flex-wrap items-center gap-3">
               <button
                 type="button"
@@ -922,7 +964,13 @@ const alertForm = reactive({
   telegramChatId: '',
   allowPrivateNetwork: false,
   notifyOnWarn: true,
-  notifyOnLimit: true
+  notifyOnLimit: true,
+  clusterMonitorEnabled: false,
+  notifyNodeOffline: true,
+  offlineGraceSec: 60,
+  notifyRemoteQuota: true,
+  diskWarnPercent: 90,
+  memWarnPercent: 90
 });
 
 const adminInterfaces = ref([]);
@@ -981,6 +1029,12 @@ async function loadSettings() {
     alertForm.allowPrivateNetwork = data.alerts.allowPrivateNetwork;
     alertForm.notifyOnWarn = data.alerts.notifyOnWarn;
     alertForm.notifyOnLimit = data.alerts.notifyOnLimit;
+    alertForm.clusterMonitorEnabled = Boolean(data.alerts.clusterMonitorEnabled);
+    alertForm.notifyNodeOffline = data.alerts.notifyNodeOffline !== false;
+    alertForm.offlineGraceSec = data.alerts.offlineGraceSec || 60;
+    alertForm.notifyRemoteQuota = data.alerts.notifyRemoteQuota !== false;
+    alertForm.diskWarnPercent = data.alerts.diskWarnPercent ?? 90;
+    alertForm.memWarnPercent = data.alerts.memWarnPercent ?? 90;
     alertMeta.hasWebhookSecret = data.alerts.hasWebhookSecret;
     alertMeta.webhookSecretMask = data.alerts.webhookSecretMask || '';
     alertMeta.hasTelegramBotToken = data.alerts.hasTelegramBotToken;

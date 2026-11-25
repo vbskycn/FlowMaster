@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,6 +32,7 @@ type Agent struct {
 	engine    *collector.Engine
 	quotaSvc    *quota.Service
 	updater     *updater.Manager
+	backupMgr   *store.BackupManager
 	hostSampler *collector.HostMetricsSampler
 	log         *logger.Manager
 	startedAt   time.Time
@@ -66,6 +68,11 @@ func NewAgent(
 		triggerHb:  make(chan struct{}, 1),
 		stopCh:     make(chan struct{}),
 	}
+}
+
+// SetBackupManager 注入备份管理器，支持主控通过白名单 RPC 触发远程一致性备份并安全下载。
+func (a *Agent) SetBackupManager(bm *store.BackupManager) {
+	a.backupMgr = bm
 }
 
 // Enabled 判断当前实例是否配置了连接主控中心的探针参数。
@@ -445,6 +452,56 @@ func (a *Agent) executeWhitelistedAction(ctx context.Context, req model.ClusterR
 			return nil, err
 		}
 		return json.Marshal(map[string]any{"status": "upgrading", "targetVersion": targetVer})
+
+	case "restart_service":
+		a.log.Warn("收到主控下发的服务平滑重启指令，即将刷盘并优雅重启进程")
+		go func() {
+			time.Sleep(450 * time.Millisecond)
+			a.engine.FlushPending()
+			os.Exit(0)
+		}()
+		return json.Marshal(map[string]any{"status": "restarting"})
+
+	case "get_logs":
+		ch := strings.TrimSpace(req.Params["channel"])
+		if ch != "alert" {
+			ch = "system"
+		}
+		level := strings.TrimSpace(req.Params["level"])
+		q := strings.TrimSpace(req.Params["q"])
+		limit, _ := strconv.Atoi(req.Params["limit"])
+		if limit <= 0 || limit > 200 {
+			limit = 100
+		}
+		entries := a.log.Query(ch, level, q, limit)
+		return json.Marshal(map[string]any{"channel": ch, "entries": entries})
+
+	case "create_and_fetch_backup":
+		if a.backupMgr == nil {
+			return nil, errors.New("节点未启用备份管理器")
+		}
+		info, err := a.backupMgr.CreateSnapshot(store.BackupKindManual, "主控远程备份", flowmaster.AppVersion())
+		if err != nil {
+			return nil, err
+		}
+		fullPath, err := a.backupMgr.ResolveBackupPath(info.Name)
+		if err != nil {
+			return nil, err
+		}
+		const maxRemoteBackupBytes = 12 * 1024 * 1024
+		if info.SizeBytes > maxRemoteBackupBytes {
+			return nil, errors.New("该节点备份归档超过 12 MiB，请直接登录其独立面板下载")
+		}
+		raw, err := os.ReadFile(fullPath)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{
+			"name":       info.Name,
+			"sha256":     info.SHA256,
+			"sizeBytes":  info.SizeBytes,
+			"dataBase64": base64.StdEncoding.EncodeToString(raw),
+		})
 
 	default:
 		return nil, errors.New("不支持的远程操作类型")

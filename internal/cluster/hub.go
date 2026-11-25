@@ -59,6 +59,12 @@ type Hub struct {
 
 	rpcMu   sync.Mutex
 	pending map[string]chan model.ClusterRPCResponse
+
+	alertMu         sync.Mutex
+	offlineNotified map[string]bool
+	alertCooldown   map[string]time.Time
+	alertStopCh     chan struct{}
+	alertStopOnce   sync.Once
 }
 
 func NewHub(
@@ -70,16 +76,19 @@ func NewHub(
 	log *logger.Manager,
 ) *Hub {
 	h := &Hub{
-		cfg:       cfg,
-		store:     st,
-		engine:    eng,
-		quotaSvc:    qs,
-		updater:     up,
-		hostSampler: collector.NewHostMetricsSampler(),
-		log:         log,
-		startedAt: time.Now(),
-		sessions:  make(map[string]*liveNodeSession),
-		pending:   make(map[string]chan model.ClusterRPCResponse),
+		cfg:             cfg,
+		store:           st,
+		engine:          eng,
+		quotaSvc:        qs,
+		updater:         up,
+		hostSampler:     collector.NewHostMetricsSampler(),
+		log:             log,
+		startedAt:       time.Now(),
+		sessions:        make(map[string]*liveNodeSession),
+		pending:         make(map[string]chan model.ClusterRPCResponse),
+		offlineNotified: make(map[string]bool),
+		alertCooldown:   make(map[string]time.Time),
+		alertStopCh:     make(chan struct{}),
 	}
 	go h.detectLocalPublicIPv4Once()
 	return h

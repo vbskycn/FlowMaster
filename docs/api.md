@@ -67,11 +67,12 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 
 为保证已有探针或脚本平滑升级，以下端点完全保留原有路径与字段结构：
 
-- `GET /api/version` -> `{"version": "2.2.0"}`
+- `GET /api/version` -> `{"version": "2.5.0"}`
 - `GET /api/interfaces` -> `{"interfaces": ["eth0"]}`
 - `GET /api/stats/{interface}/{period}`（`period`: `l`, `5`, `h`, `d`, `m`, `y`，保留 `data` 文本行与 MiB 精度 `series`）
 - `GET /api/stats/{interface}/range/{startDate}/{endDate}`
 - `GET /api/cache/stats` & `POST /api/cache/clear`
+- `GET /api/system/memory`、`GET /api/system/status`、`GET /api/test/vnstat`
 
 ---
 
@@ -79,10 +80,10 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 
 | 方法 | 路径 | 权限 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/cluster/nodes` | 视图访问 | 获取本机与全部受控节点的在线状态、实时网速、今日/本月流量、配额进度与版本汇总 |
-| `GET` | `/api/v1/cluster/nodes/{id}/interfaces` | 视图访问 | 获取指定远程节点的网卡与 IPv4/IPv6 元数据 |
-| `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/{period}` | 视图访问 | 通过反向长轮询隧道实时查询指定节点的周期统计 |
-| `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/range/{start}/{end}` | 视图访问 | 查询指定节点的日期范围流量统计 |
+| `GET` | `/api/v1/cluster/nodes` | 视图访问 | 获取本机与全部受控节点的在线状态、实时网速、CPU/内存/硬盘、今日/本月流量、配额进度与版本汇总（访客自动脱敏 IP/端口） |
+| `GET` | `/api/v1/cluster/nodes/{id}/interfaces` | 管理员 | 获取指定远程节点的网卡与 IPv4/IPv6 元数据 |
+| `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/{period}` | 管理员 | 通过反向长轮询隧道实时查询指定节点的周期统计 |
+| `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/range/{start}/{end}` | 管理员 | 查询指定节点的日期范围流量统计 |
 | `GET` | `/api/v1/cluster/dist/install.sh` | 节点 Token / 管理员 | 下发主控内嵌 `install.sh` 脚本（支持 `?token=` 或 `Authorization: Bearer`） |
 | `GET` | `/api/v1/cluster/dist/version` | 节点 Token / 管理员 | 查询主控当前分发目标版本号 |
 | `GET` | `/api/v1/cluster/dist/{version}/SHA256SUMS` | 节点 Token / 管理员 | 获取主控分发包 SHA-256 校验清单 |
@@ -91,5 +92,11 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 | `PUT` | `/api/v1/admin/cluster/nodes/{id}` | 管理员 | 修改节点名称、分组标签与备注 |
 | `DELETE` | `/api/v1/admin/cluster/nodes/{id}` | 管理员 | 从主控移除节点 |
 | `GET/PUT` | `/api/v1/admin/cluster/nodes/{id}/config` | 管理员 | 远程读取或下发保存指定节点的月度流量包配额与引擎设置 |
+| `GET` | `/api/v1/admin/cluster/nodes/{id}/logs` | 管理员 | 通过隧道只读查看指定节点的脱敏运行日志（`channel=system\|alert`、`limit`） |
+| `POST` | `/api/v1/admin/cluster/nodes/{id}/backup/download` | 管理员 | 触发指定节点在线 SQLite `VACUUM INTO` 快照并通过加密隧道下载 `.tar.gz` 备份包 |
+| `PUT/DELETE` | `/api/v1/admin/cluster/groups` | 管理员 | 批量重命名分组或删除分组（清空归属但不删节点） |
 | `POST` | `/api/v1/admin/cluster/upgrade` | 管理员 | 向勾选的一台或多台节点批量下发受控原子自升级指令 |
-- `GET /api/system/memory`、`GET /api/system/status`、`GET /api/test/vnstat`
+| `POST` | `/api/v1/admin/cluster/batch/group` | 管理员 | 批量调整多个节点的分组标签 |
+| `POST` | `/api/v1/admin/cluster/batch/quota` | 管理员 | 并发向多台在线节点批量下发月度流量包配额模板 |
+| `POST` | `/api/v1/admin/cluster/batch/restart` | 管理员 | 批量下发严格白名单平滑重启指令（需 `{"confirm": true}`） |
+| `POST` | `/api/v1/admin/cluster/batch/delete` | 管理员 | 批量移除多个节点记录（需 `{"confirm": true}`） |

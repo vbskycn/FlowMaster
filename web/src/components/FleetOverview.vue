@@ -166,6 +166,41 @@
         </div>
       </div>
 
+      <!-- 管理员批量操作栏（勾选任意节点后自动展开，所有高危操作强制二次确认） -->
+      <div
+        v-if="authenticated && selectedNodeIds.length > 0"
+        class="p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/80 flex flex-wrap items-center justify-between gap-2 text-xs"
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold text-blue-800 dark:text-blue-200">
+            已勾选 <strong class="font-num">{{ selectedNodeIds.length }}</strong> 台机器
+          </span>
+          <button type="button" class="underline text-blue-600 dark:text-blue-400 cursor-pointer" @click="selectAllFilteredNodes">全选当前 ({{ filteredNodes.length }})</button>
+          <button type="button" class="underline text-slate-500 cursor-pointer" @click="selectedNodeIds = []">清空</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <button type="button" :disabled="batchBusy" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-blue-400 cursor-pointer" @click="runBatchGroup">
+            批量改分组
+          </button>
+          <button type="button" :disabled="batchBusy" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-blue-400 cursor-pointer" @click="showBatchQuotaModal = true">
+            批量下发配额
+          </button>
+          <button type="button" :disabled="batchBusy" class="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 cursor-pointer" @click="runBatchRestart">
+            🔄 批量平滑重启
+          </button>
+          <button type="button" :disabled="batchBusy" class="px-2.5 py-1 rounded-lg bg-indigo-600 text-white cursor-pointer" @click="openUpgradeForSelected">
+            🚀 升级选中
+          </button>
+          <button type="button" :disabled="batchBusy" class="px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 cursor-pointer" @click="runBatchDelete">
+            批量删除
+          </button>
+        </div>
+      </div>
+      <div v-if="batchNotice" class="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800/70 text-xs text-slate-700 dark:text-slate-200 flex items-center justify-between">
+        <span>{{ batchNotice }}</span>
+        <button type="button" class="underline text-slate-500 ml-2 cursor-pointer" @click="batchNotice = ''">关闭</button>
+      </div>
+
       <!-- 视图一：响应式多机卡片墙 -->
       <div v-if="displayMode === 'grid'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pt-1">
         <article
@@ -179,6 +214,14 @@
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
+                  <input
+                    v-if="authenticated"
+                    v-model="selectedNodeIds"
+                    type="checkbox"
+                    :value="node.id"
+                    class="accent-blue-600 w-3.5 h-3.5 shrink-0 cursor-pointer"
+                    title="勾选以进行批量操作"
+                  />
                   <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="node.online ? 'bg-emerald-500' : 'bg-red-500'"></span>
                   <h3
                     class="text-sm font-bold text-slate-900 dark:text-white truncate"
@@ -327,6 +370,14 @@
           <table class="w-full text-xs text-left border-collapse">
             <thead class="bg-slate-100/80 dark:bg-slate-900/80 text-slate-500 dark:text-slate-400">
               <tr>
+                <th v-if="authenticated" class="py-2.5 px-2.5 w-9 text-center">
+                  <input
+                    type="checkbox"
+                    class="accent-blue-600 cursor-pointer"
+                    :checked="filteredNodes.length > 0 && selectedNodeIds.length === filteredNodes.length"
+                    @change="toggleSelectAllFiltered($event.target.checked)"
+                  />
+                </th>
                 <th class="py-2.5 px-3 w-12 text-center">#</th>
                 <th class="py-2.5 px-3">节点名称 / 分组</th>
                 <th v-if="authenticated" class="py-2.5 px-3">IPv4 / IPv6</th>
@@ -341,6 +392,9 @@
             </thead>
             <tbody class="divide-y divide-slate-200/70 dark:divide-slate-800">
               <tr v-for="(node, idx) in pagedTableNodes" :key="node.id" class="hover:bg-blue-50/30 dark:hover:bg-slate-800/40">
+                <td v-if="authenticated" class="py-2.5 px-2.5 text-center">
+                  <input v-model="selectedNodeIds" type="checkbox" :value="node.id" class="accent-blue-600 cursor-pointer" />
+                </td>
                 <td class="py-2.5 px-3 text-center font-num text-slate-400">{{ (tablePage - 1) * tablePageSize + idx + 1 }}</td>
                 <td class="py-2.5 px-3">
                   <div class="flex items-center gap-1.5">
@@ -603,6 +657,52 @@
       </div>
     </div>
 
+    <!-- 弹窗三：批量下发月度流量包配额模板 -->
+    <div v-if="showBatchQuotaModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+      <div class="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-bold text-slate-900 dark:text-white">批量下发月度流量包模板 ({{ selectedNodeIds.length }} 台)</h3>
+          <button type="button" class="text-xs text-slate-400 hover:text-slate-600 cursor-pointer" @click="showBatchQuotaModal = false">关闭</button>
+        </div>
+
+        <label class="inline-flex items-center gap-2 text-xs font-medium cursor-pointer">
+          <input v-model="batchQuotaForm.enabled" type="checkbox" class="accent-blue-600 w-4 h-4" />
+          <span>启用月度流量包监控</span>
+        </label>
+
+        <div class="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <label class="block text-slate-500 mb-1">每月重置日 (1–31)</label>
+            <input v-model.number="batchQuotaForm.resetDay" type="number" min="1" max="31" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
+          </div>
+          <div>
+            <label class="block text-slate-500 mb-1">计费方向</label>
+            <select v-model="batchQuotaForm.direction" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950">
+              <option value="both">双向合计 (RX+TX)</option>
+              <option value="tx">仅出站上行 (TX)</option>
+              <option value="rx">仅入站下行 (RX)</option>
+              <option value="max">单向取大 max(RX,TX)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-slate-500 mb-1">月度限额 (GiB)</label>
+            <input v-model.number="batchQuotaForm.limitGiB" type="number" min="1" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
+          </div>
+          <div>
+            <label class="block text-slate-500 mb-1">预警阈值 (%)</label>
+            <input v-model.number="batchQuotaForm.warnPercent" type="number" min="1" max="99" class="w-full px-2.5 py-1.5 font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-1">
+          <button type="button" class="px-4 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer" @click="showBatchQuotaModal = false">取消</button>
+          <button type="button" :disabled="batchBusy" class="px-4 py-2 text-xs font-medium rounded-xl bg-blue-600 hover:bg-blue-700 text-white cursor-pointer" @click="submitBatchQuota">
+            {{ batchBusy ? '下发中…' : '确认批量下发' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 单机远程配置弹窗 -->
     <RemoteNodeConfigModal
       v-if="editingNode"
@@ -705,6 +805,127 @@ const selectedUpgradeIds = ref([]);
 const upgradeFeedback = reactive({});
 
 const editingNode = ref(null);
+const selectedNodeIds = ref([]);
+const batchBusy = ref(false);
+const batchNotice = ref('');
+const showBatchQuotaModal = ref(false);
+const batchQuotaForm = reactive({
+  enabled: true,
+  resetDay: 1,
+  direction: 'both',
+  limitGiB: 1000,
+  warnPercent: 80
+});
+
+function selectAllFilteredNodes() {
+  selectedNodeIds.value = filteredNodes.value.map(n => n.id);
+}
+
+function toggleSelectAllFiltered(checked) {
+  selectedNodeIds.value = checked ? filteredNodes.value.map(n => n.id) : [];
+}
+
+function summarizeBatchResult(label, results) {
+  const vals = Object.values(results || {});
+  const failed = vals.filter(v => String(v).startsWith('失败')).length;
+  batchNotice.value = `${label}完成：共 ${vals.length} 台，成功 ${vals.length - failed} 台${failed > 0 ? `，失败 ${failed} 台` : ''}`;
+}
+
+async function runBatchGroup() {
+  const nextGroup = window.prompt(`为已选中的 ${selectedNodeIds.value.length} 台节点统一设置分组名称（留空则设为未分组）：`, '');
+  if (nextGroup === null) return;
+  batchBusy.value = true;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/batch/group', {
+      method: 'POST',
+      body: { nodeIds: selectedNodeIds.value, groupName: nextGroup.trim() }
+    });
+    summarizeBatchResult('批量改分组', res.results);
+    selectedNodeIds.value = [];
+    emit('refresh');
+  } catch (err) {
+    window.alert(err.message);
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+async function submitBatchQuota() {
+  batchBusy.value = true;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/batch/quota', {
+      method: 'POST',
+      body: {
+        nodeIds: selectedNodeIds.value,
+        quota: {
+          enabled: batchQuotaForm.enabled,
+          interface: '',
+          resetDay: Math.max(1, Math.min(31, Number(batchQuotaForm.resetDay || 1))),
+          direction: batchQuotaForm.direction,
+          monthlyLimitBytes: Math.max(1, Number(batchQuotaForm.limitGiB || 1)) * 1024 * 1024 * 1024,
+          warnPercent: Math.max(1, Math.min(99, Number(batchQuotaForm.warnPercent || 80)))
+        }
+      }
+    });
+    showBatchQuotaModal.value = false;
+    summarizeBatchResult('批量下发配额', res.results);
+    selectedNodeIds.value = [];
+    emit('refresh');
+  } catch (err) {
+    window.alert(err.message);
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+async function runBatchRestart() {
+  if (!window.confirm(`确认对已选中的 ${selectedNodeIds.value.length} 台节点执行服务平滑重启吗？\n\n（仅平滑重启 FlowMaster 进程，不会重启操作系统，约 2 秒恢复）`)) return;
+  batchBusy.value = true;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/batch/restart', {
+      method: 'POST',
+      body: { nodeIds: selectedNodeIds.value, confirm: true }
+    });
+    summarizeBatchResult('批量平滑重启', res.results);
+    selectedNodeIds.value = [];
+    emit('refresh');
+  } catch (err) {
+    window.alert(err.message);
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+function openUpgradeForSelected() {
+  upgradeTargetVer.value = props.latestVersion || props.hubVersion;
+  selectedUpgradeIds.value = props.nodes
+    .filter(n => selectedNodeIds.value.includes(n.id) && n.online && n.canSelfUpgrade)
+    .map(n => n.id);
+  showUpgradeModal.value = true;
+}
+
+async function runBatchDelete() {
+  const remoteIds = selectedNodeIds.value.filter(id => id !== 'local');
+  if (remoteIds.length === 0) {
+    window.alert('主控本机节点不可删除，请勾选需要移除的远程被控节点。');
+    return;
+  }
+  if (!window.confirm(`⚠️ 确认从主控批量移除选中的 ${remoteIds.length} 台受控节点吗？\n\n（仅移除主控记录，不会删除目标机器本地流量数据）`)) return;
+  batchBusy.value = true;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/batch/delete', {
+      method: 'POST',
+      body: { nodeIds: remoteIds, confirm: true }
+    });
+    summarizeBatchResult('批量删除节点', res.results);
+    selectedNodeIds.value = [];
+    emit('refresh');
+  } catch (err) {
+    window.alert(err.message);
+  } finally {
+    batchBusy.value = false;
+  }
+}
 
 watch([searchQuery, selectedGroup, tablePageSize], () => {
   tablePage.value = 1;

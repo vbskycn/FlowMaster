@@ -720,17 +720,27 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 	qt := s.store.GetQuotaConfig()
 	al := s.store.GetAlertConfig()
 
+	offlineGrace := al.OfflineGraceSec
+	if offlineGrace < 30 {
+		offlineGrace = 60
+	}
 	alertView := model.AlertConfigView{
-		Enabled:              al.Enabled,
-		WebhookURL:           al.WebhookURL,
-		HasWebhookSecret:     strings.TrimSpace(al.WebhookSecret) != "",
-		WebhookSecretMask:    quota.MaskSecret(al.WebhookSecret),
-		HasTelegramBotToken:  strings.TrimSpace(al.TelegramBotToken) != "",
-		TelegramBotTokenMask: quota.MaskSecret(al.TelegramBotToken),
-		TelegramChatID:       al.TelegramChatID,
-		AllowPrivateNetwork:  al.AllowPrivateNetwork,
-		NotifyOnWarn:         al.NotifyOnWarn,
-		NotifyOnLimit:        al.NotifyOnLimit,
+		Enabled:               al.Enabled,
+		WebhookURL:            al.WebhookURL,
+		HasWebhookSecret:      strings.TrimSpace(al.WebhookSecret) != "",
+		WebhookSecretMask:     quota.MaskSecret(al.WebhookSecret),
+		HasTelegramBotToken:   strings.TrimSpace(al.TelegramBotToken) != "",
+		TelegramBotTokenMask:  quota.MaskSecret(al.TelegramBotToken),
+		TelegramChatID:        al.TelegramChatID,
+		AllowPrivateNetwork:   al.AllowPrivateNetwork,
+		NotifyOnWarn:          al.NotifyOnWarn,
+		NotifyOnLimit:         al.NotifyOnLimit,
+		ClusterMonitorEnabled: al.ClusterMonitorEnabled,
+		NotifyNodeOffline:     al.NotifyNodeOffline,
+		OfflineGraceSec:       offlineGrace,
+		NotifyRemoteQuota:     al.NotifyRemoteQuota,
+		DiskWarnPercent:       al.DiskWarnPercent,
+		MemWarnPercent:        al.MemWarnPercent,
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -810,16 +820,22 @@ func (s *Server) handleAdminSaveSettings(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled                bool   `json:"enabled"`
-		WebhookURL             string `json:"webhookUrl"`
-		WebhookSecret          string `json:"webhookSecret"`
-		ClearWebhookSecret     bool   `json:"clearWebhookSecret"`
-		TelegramBotToken       string `json:"telegramBotToken"`
-		ClearTelegramBotToken  bool   `json:"clearTelegramBotToken"`
-		TelegramChatID         string `json:"telegramChatId"`
-		AllowPrivateNetwork    bool   `json:"allowPrivateNetwork"`
-		NotifyOnWarn           bool   `json:"notifyOnWarn"`
-		NotifyOnLimit          bool   `json:"notifyOnLimit"`
+		Enabled               bool   `json:"enabled"`
+		WebhookURL            string `json:"webhookUrl"`
+		WebhookSecret         string `json:"webhookSecret"`
+		ClearWebhookSecret    bool   `json:"clearWebhookSecret"`
+		TelegramBotToken      string `json:"telegramBotToken"`
+		ClearTelegramBotToken bool   `json:"clearTelegramBotToken"`
+		TelegramChatID        string `json:"telegramChatId"`
+		AllowPrivateNetwork   bool   `json:"allowPrivateNetwork"`
+		NotifyOnWarn          bool   `json:"notifyOnWarn"`
+		NotifyOnLimit         bool   `json:"notifyOnLimit"`
+		ClusterMonitorEnabled bool   `json:"clusterMonitorEnabled"`
+		NotifyNodeOffline     bool   `json:"notifyNodeOffline"`
+		OfflineGraceSec       int    `json:"offlineGraceSec"`
+		NotifyRemoteQuota     bool   `json:"notifyRemoteQuota"`
+		DiskWarnPercent       int    `json:"diskWarnPercent"`
+		MemWarnPercent        int    `json:"memWarnPercent"`
 	}
 	if err := readJSONBody(r, &req, 32*1024); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -833,6 +849,12 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 	current.AllowPrivateNetwork = req.AllowPrivateNetwork
 	current.NotifyOnWarn = req.NotifyOnWarn
 	current.NotifyOnLimit = req.NotifyOnLimit
+	current.ClusterMonitorEnabled = req.ClusterMonitorEnabled
+	current.NotifyNodeOffline = req.NotifyNodeOffline
+	current.OfflineGraceSec = clampInt(req.OfflineGraceSec, 30, 3600)
+	current.NotifyRemoteQuota = req.NotifyRemoteQuota
+	current.DiskWarnPercent = clampInt(req.DiskWarnPercent, 0, 99)
+	current.MemWarnPercent = clampInt(req.MemWarnPercent, 0, 99)
 
 	if req.ClearWebhookSecret {
 		current.WebhookSecret = ""

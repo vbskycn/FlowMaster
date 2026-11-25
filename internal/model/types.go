@@ -172,20 +172,34 @@ type AlertConfig struct {
 	AllowPrivateNetwork bool   `json:"allowPrivateNetwork"`
 	NotifyOnWarn        bool   `json:"notifyOnWarn"`
 	NotifyOnLimit       bool   `json:"notifyOnLimit"`
+
+	// 主控统一集群告警托管配置（配置一次即可覆盖全集群所有节点的掉线/恢复、流量超额与硬盘/内存高负载）
+	ClusterMonitorEnabled bool `json:"clusterMonitorEnabled"`
+	NotifyNodeOffline     bool `json:"notifyNodeOffline"`
+	OfflineGraceSec       int  `json:"offlineGraceSec"`
+	NotifyRemoteQuota     bool `json:"notifyRemoteQuota"`
+	DiskWarnPercent       int  `json:"diskWarnPercent"`
+	MemWarnPercent        int  `json:"memWarnPercent"`
 }
 
 // AlertConfigView 为面向前端展示的脱敏配置视图（密钥只写不回显）。
 type AlertConfigView struct {
-	Enabled              bool   `json:"enabled"`
-	WebhookURL           string `json:"webhookUrl"`
-	HasWebhookSecret     bool   `json:"hasWebhookSecret"`
-	WebhookSecretMask    string `json:"webhookSecretMask"`
-	HasTelegramBotToken  bool   `json:"hasTelegramBotToken"`
-	TelegramBotTokenMask string `json:"telegramBotTokenMask"`
-	TelegramChatID       string `json:"telegramChatId"`
-	AllowPrivateNetwork  bool   `json:"allowPrivateNetwork"`
-	NotifyOnWarn         bool   `json:"notifyOnWarn"`
-	NotifyOnLimit        bool   `json:"notifyOnLimit"`
+	Enabled               bool   `json:"enabled"`
+	WebhookURL            string `json:"webhookUrl"`
+	HasWebhookSecret      bool   `json:"hasWebhookSecret"`
+	WebhookSecretMask     string `json:"webhookSecretMask"`
+	HasTelegramBotToken   bool   `json:"hasTelegramBotToken"`
+	TelegramBotTokenMask  string `json:"telegramBotTokenMask"`
+	TelegramChatID        string `json:"telegramChatId"`
+	AllowPrivateNetwork   bool   `json:"allowPrivateNetwork"`
+	NotifyOnWarn          bool   `json:"notifyOnWarn"`
+	NotifyOnLimit         bool   `json:"notifyOnLimit"`
+	ClusterMonitorEnabled bool   `json:"clusterMonitorEnabled"`
+	NotifyNodeOffline     bool   `json:"notifyNodeOffline"`
+	OfflineGraceSec       int    `json:"offlineGraceSec"`
+	NotifyRemoteQuota     bool   `json:"notifyRemoteQuota"`
+	DiskWarnPercent       int    `json:"diskWarnPercent"`
+	MemWarnPercent        int    `json:"memWarnPercent"`
 }
 
 // BackupInfo 描述单个备份快照归档元数据。

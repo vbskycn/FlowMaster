@@ -49,14 +49,31 @@
             <button type="button" class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer" @click="saveMeta">
               保存节点标识
             </button>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                v-if="node.online"
+                type="button"
+                class="px-3 py-1.5 text-xs rounded-lg bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300 hover:opacity-85 cursor-pointer"
+                @click="restartSingleNode"
+              >
+                🔄 平滑重启
+              </button>
+              <button
+                v-if="node.online"
+                type="button"
+                :disabled="downloadingBackup"
+                class="px-3 py-1.5 text-xs rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 hover:opacity-85 cursor-pointer disabled:opacity-50"
+                @click="downloadRemoteBackup"
+              >
+                {{ downloadingBackup ? '备份中…' : '💾 远程备份下载' }}
+              </button>
               <button
                 v-if="node.online"
                 type="button"
                 class="px-3 py-1.5 text-xs rounded-lg bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 hover:opacity-85 cursor-pointer"
                 @click="upgradeSingleNode"
               >
-                🚀 远程升级此节点
+                🚀 远程升级
               </button>
               <button
                 type="button"
@@ -176,6 +193,29 @@
               </table>
             </div>
           </div>
+          <!-- 4. 远程节点实时脱敏日志查看器（免 SSH 排错） -->
+          <div class="p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h4 class="text-xs font-semibold uppercase tracking-wider text-slate-500">远程节点脱敏运行日志（最新在顶部）</h4>
+              <div class="flex items-center gap-2 text-xs">
+                <select v-model="remoteLogChannel" class="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" @change="loadRemoteLogs">
+                  <option value="system">系统日志 (system)</option>
+                  <option value="alert">告警日志 (alert)</option>
+                </select>
+                <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="loadRemoteLogs">
+                  {{ loadingLogs ? '读取中…' : '刷新日志' }}
+                </button>
+              </div>
+            </div>
+            <div class="max-h-48 overflow-y-auto rounded-lg bg-slate-950 text-slate-200 p-2.5 font-num text-[11px] space-y-1">
+              <div v-if="remoteLogs.length === 0" class="text-slate-500 py-3 text-center">点击“刷新日志”读取该节点最近日志</div>
+              <div v-for="(item, idx) in remoteLogs" :key="idx" class="break-all leading-relaxed">
+                <span class="text-slate-500">[{{ item.timestamp }}]</span>
+                <span class="ml-1 font-semibold" :class="item.level === 'ERROR' ? 'text-red-400' : (item.level === 'WARN' ? 'text-amber-400' : 'text-emerald-400')">[{{ item.level }}]</span>
+                <span class="ml-1">{{ item.message }}</span>
+              </div>
+            </div>
+          </div>
         </template>
         <div v-else class="py-8 text-center text-xs text-slate-400">正在通过加密通道读取远程节点配置…</div>
       </div>
@@ -233,6 +273,10 @@ const quotaLimitGiB = computed({
 });
 
 const remoteInterfaces = ref([]);
+const remoteLogChannel = ref('system');
+const remoteLogs = ref([]);
+const loadingLogs = ref(false);
+const downloadingBackup = ref(false);
 
 function showMsg(text, type = 'ok') {
   notice.type = type;
@@ -325,6 +369,65 @@ async function upgradeSingleNode() {
     emit('updated');
   } catch (err) {
     showMsg(err.message, 'error');
+  }
+}
+
+async function restartSingleNode() {
+  if (!window.confirm(`确认平滑重启节点「${props.node.name}」的 FlowMaster 服务吗？（约 2 秒自动恢复，不会重启操作系统）`)) return;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/batch/restart', {
+      method: 'POST',
+      body: { nodeIds: [props.node.id], confirm: true }
+    });
+    const detail = res.results?.[props.node.id] || '已发送平滑重启指令';
+    showMsg(detail, detail.startsWith('失败') ? 'error' : 'ok');
+    emit('updated');
+  } catch (err) {
+    showMsg(err.message, 'error');
+  }
+}
+
+async function loadRemoteLogs() {
+  loadingLogs.value = true;
+  try {
+    const res = await apiRequest(`/api/v1/admin/cluster/nodes/${encodeURIComponent(props.node.id)}/logs?channel=${remoteLogChannel.value}&limit=100`);
+    remoteLogs.value = res.entries || [];
+  } catch (err) {
+    showMsg(`读取远程日志失败: ${err.message}`, 'error');
+  } finally {
+    loadingLogs.value = false;
+  }
+}
+
+async function downloadRemoteBackup() {
+  downloadingBackup.value = true;
+  try {
+    const resp = await fetch(`/api/v1/admin/cluster/nodes/${encodeURIComponent(props.node.id)}/backup/download`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'FlowMaster' }
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = /filename="([^"]+)"/.exec(cd);
+    const filename = match ? match[1] : `${props.node.name || props.node.id}-backup.tar.gz`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showMsg(`远程备份 ${filename} 已创建并开始下载到本地`);
+  } catch (err) {
+    showMsg(`远程备份失败: ${err.message}`, 'error');
+  } finally {
+    downloadingBackup.value = false;
   }
 }
 

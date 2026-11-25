@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -47,6 +48,12 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/cluster/nodes/{id}/vnstat/import", s.requireAdmin(s.handleAdminRemoteImportVnstat))
 	mux.HandleFunc("GET /api/v1/admin/cluster/releases/latest", s.requireAdmin(s.handleAdminCheckLatestRelease))
 	mux.HandleFunc("POST /api/v1/admin/cluster/upgrade", s.requireAdmin(s.handleAdminUpgradeNodes))
+	mux.HandleFunc("POST /api/v1/admin/cluster/batch/group", s.requireAdmin(s.handleAdminBatchSetGroup))
+	mux.HandleFunc("POST /api/v1/admin/cluster/batch/delete", s.requireAdmin(s.handleAdminBatchDeleteNodes))
+	mux.HandleFunc("POST /api/v1/admin/cluster/batch/quota", s.requireAdmin(s.handleAdminBatchApplyQuota))
+	mux.HandleFunc("POST /api/v1/admin/cluster/batch/restart", s.requireAdmin(s.handleAdminBatchRestartNodes))
+	mux.HandleFunc("GET /api/v1/admin/cluster/nodes/{id}/logs", s.requireAdmin(s.handleAdminRemoteNodeLogs))
+	mux.HandleFunc("POST /api/v1/admin/cluster/nodes/{id}/backup/download", s.requireAdmin(s.handleAdminRemoteNodeBackupDownload))
 }
 
 func (s *Server) requireAgentAuth(w http.ResponseWriter, r *http.Request) (model.ClusterNodeRecord, bool) {
@@ -94,7 +101,7 @@ func (s *Server) handleAgentReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var resp model.ClusterRPCResponse
-	if err := readJSONBody(r, &resp, 2*1024*1024); err != nil {
+	if err := readJSONBody(r, &resp, 20*1024*1024); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -655,4 +662,148 @@ func (s *Server) handleAdminUpgradeNodes(w http.ResponseWriter, r *http.Request)
 		"targetVersion": targetVer,
 		"results":       results,
 	})
+}
+
+func (s *Server) handleAdminBatchSetGroup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NodeIDs   []string `json:"nodeIds"`
+		GroupName string   `json:"groupName"`
+	}
+	if err := readJSONBody(r, &req, 32*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if len(req.NodeIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请至少选择一个节点"})
+		return
+	}
+	results := s.hub.BatchSetGroup(req.NodeIDs, req.GroupName)
+	s.log.Info("管理员批量修改节点分组 -> 「%s」 (目标节点数: %d)", strings.TrimSpace(req.GroupName), len(req.NodeIDs))
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleAdminBatchDeleteNodes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NodeIDs []string `json:"nodeIds"`
+		Confirm bool     `json:"confirm"`
+	}
+	if err := readJSONBody(r, &req, 32*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if !req.Confirm || len(req.NodeIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "批量删除节点需要明确确认且至少选中一台节点"})
+		return
+	}
+	results := s.hub.BatchDeleteNodes(req.NodeIDs)
+	s.log.Warn("管理员批量删除了受控节点 (数量: %d)", len(req.NodeIDs))
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleAdminBatchApplyQuota(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NodeIDs []string          `json:"nodeIds"`
+		Quota   model.QuotaConfig `json:"quota"`
+	}
+	if err := readJSONBody(r, &req, 32*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if len(req.NodeIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请至少选择一台需要下发配额的节点"})
+		return
+	}
+	qt := req.Quota
+	qt.ResetDay = clampInt(qt.ResetDay, 1, 31)
+	qt.WarnPercent = clampInt(qt.WarnPercent, 1, 99)
+	if qt.MonthlyLimitBytes < 0 {
+		qt.MonthlyLimitBytes = 0
+	}
+	switch qt.Direction {
+	case model.QuotaDirBoth, model.QuotaDirTX, model.QuotaDirRX, model.QuotaDirMax:
+	default:
+		qt.Direction = model.QuotaDirBoth
+	}
+	results := s.hub.BatchApplyQuota(r.Context(), req.NodeIDs, qt)
+	s.log.Warn("管理员批量下发月度流量包配额模板 (节点数: %d, 启用: %v)", len(req.NodeIDs), qt.Enabled)
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleAdminBatchRestartNodes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		NodeIDs []string `json:"nodeIds"`
+		Confirm bool     `json:"confirm"`
+	}
+	if err := readJSONBody(r, &req, 32*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if !req.Confirm || len(req.NodeIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "批量平滑重启服务需要明确确认且至少选中一台节点"})
+		return
+	}
+	results := s.hub.BatchRestartNodes(r.Context(), req.NodeIDs)
+	s.log.Warn("管理员发起了节点服务批量平滑重启 (目标节点数: %d)", len(req.NodeIDs))
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleAdminRemoteNodeLogs(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	if nodeID == "" || nodeID == "local" {
+		s.handleAdminLogs(w, r)
+		return
+	}
+	raw, err := s.hub.CallNode(r.Context(), nodeID, "get_logs", map[string]string{
+		"channel": strings.TrimSpace(r.URL.Query().Get("channel")),
+		"level":   strings.TrimSpace(r.URL.Query().Get("level")),
+		"q":       strings.TrimSpace(r.URL.Query().Get("q")),
+		"limit":   strings.TrimSpace(r.URL.Query().Get("limit")),
+	}, nil)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) handleAdminRemoteNodeBackupDownload(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	if nodeID == "" || nodeID == "local" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "主控本机请在「备份与还原」页面创建并下载快照"})
+		return
+	}
+	raw, err := s.hub.CallNode(r.Context(), nodeID, "create_and_fetch_backup", nil, nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	var payload struct {
+		Name       string `json:"name"`
+		SHA256     string `json:"sha256"`
+		DataBase64 string `json:"dataBase64"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.DataBase64 == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "解析远程备份归档失败"})
+		return
+	}
+	archiveBytes, err := base64.StdEncoding.DecodeString(payload.DataBase64)
+	if err != nil || len(archiveBytes) == 0 {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "解码远程备份归档失败"})
+		return
+	}
+	safeName := payload.Name
+	if safeName == "" || strings.ContainsAny(safeName, `/\ "`) {
+		safeName = fmt.Sprintf("node-%s-backup.tar.gz", nodeID)
+	}
+	s.log.Info("管理员通过加密通道远程备份并下载了节点 %s 的数据库快照 (%s, %d bytes)", nodeID, safeName, len(archiveBytes))
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safeName))
+	if payload.SHA256 != "" {
+		w.Header().Set("X-Checksum-Sha256", payload.SHA256)
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(archiveBytes)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(archiveBytes)
 }

@@ -202,6 +202,15 @@ func (s *Service) SendTestAlert(ctx context.Context) error {
 	return s.dispatchAlert(ctx, aCfg, "test", title, text, status)
 }
 
+// DispatchClusterAlert 供主控集群监控循环复用同一防 SSRF 推送通道发送节点掉线/恢复、配额或硬件预警。
+func (s *Service) DispatchClusterAlert(ctx context.Context, event, title, text string) error {
+	aCfg := s.store.GetAlertConfig()
+	if !aCfg.Enabled {
+		return nil
+	}
+	return s.dispatchAlert(ctx, aCfg, event, title, text, model.QuotaStatus{})
+}
+
 func formatQuotaMessage(title string, st model.QuotaStatus) string {
 	giB := float64(1024 * 1024 * 1024)
 	return fmt.Sprintf("%s\n监控接口：%s\n计费周期：%s ~ %s\n已用流量：%.2f GiB / %.2f GiB (%.2f%%)\n预计周期末：%.2f GiB",

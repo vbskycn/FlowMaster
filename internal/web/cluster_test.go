@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -149,7 +150,12 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	agentEng := collector.NewEngine(agentCfg, agentSt, agentVn, agentLog)
 	agentQuota := quota.NewService(agentSt, agentEng, agentLog)
 	agentUp := updater.NewManager(agentLog, nil)
+	agentBM, err := store.NewBackupManager(agentSt, agentDir)
+	if err != nil {
+		t.Fatalf("init agent backup manager: %v", err)
+	}
 	agent := cluster.NewAgent(agentCfg, agentSt, agentEng, agentQuota, agentUp, agentLog)
+	agent.SetBackupManager(agentBM)
 	agent.Start()
 	defer agent.Stop()
 
@@ -277,12 +283,98 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	}
 	respDelGrp.Body.Close()
 
-	reqDelNode, _ := http.NewRequest(http.MethodDelete, hubTS.URL+"/api/v1/admin/cluster/nodes/"+createRes.Node.ID, nil)
-	reqDelNode.Header.Set("X-Requested-With", "FlowMaster")
-	reqDelNode.AddCookie(adminCookie)
-	respDelNode, err := client.Do(reqDelNode)
-	if err != nil || respDelNode.StatusCode != http.StatusOK {
-		t.Fatalf("delete cluster node failed: status=%d err=%v", respDelNode.StatusCode, err)
+	// 7. 验证 v2.5.0 批量分组、批量下发配额、远程日志查看、远程备份下载与批量删除
+	batchGrpBody, _ := json.Marshal(map[string]any{
+		"nodeIds":   []string{createRes.Node.ID},
+		"groupName": "欧洲骨干",
+	})
+	reqBatchGrp, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/admin/cluster/batch/group", bytes.NewReader(batchGrpBody))
+	reqBatchGrp.Header.Set("Content-Type", "application/json")
+	reqBatchGrp.Header.Set("X-Requested-With", "FlowMaster")
+	reqBatchGrp.AddCookie(adminCookie)
+	respBatchGrp, err := client.Do(reqBatchGrp)
+	if err != nil || respBatchGrp.StatusCode != http.StatusOK {
+		t.Fatalf("batch group failed: status=%d err=%v", respBatchGrp.StatusCode, err)
 	}
-	respDelNode.Body.Close()
+	respBatchGrp.Body.Close()
+
+	batchQuotaBody, _ := json.Marshal(map[string]any{
+		"nodeIds": []string{createRes.Node.ID},
+		"quota": map[string]any{
+			"enabled":           true,
+			"interface":         "ens3",
+			"resetDay":          1,
+			"direction":         "tx",
+			"monthlyLimitBytes": int64(200 * 1024 * 1024 * 1024),
+			"warnPercent":       75,
+		},
+	})
+	reqBatchQuota, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/admin/cluster/batch/quota", bytes.NewReader(batchQuotaBody))
+	reqBatchQuota.Header.Set("Content-Type", "application/json")
+	reqBatchQuota.Header.Set("X-Requested-With", "FlowMaster")
+	reqBatchQuota.AddCookie(adminCookie)
+	respBatchQuota, err := client.Do(reqBatchQuota)
+	if err != nil || respBatchQuota.StatusCode != http.StatusOK {
+		t.Fatalf("batch quota failed: status=%d err=%v", respBatchQuota.StatusCode, err)
+	}
+	respBatchQuota.Body.Close()
+	if gotQ := agentSt.GetQuotaConfig(); gotQ.WarnPercent != 75 || gotQ.Direction != "tx" {
+		t.Fatalf("agent quota not updated by batch quota: %+v", gotQ)
+	}
+
+	// 远程日志查看（通过隧道）
+	reqLogs, _ := http.NewRequest(http.MethodGet, hubTS.URL+"/api/v1/admin/cluster/nodes/"+createRes.Node.ID+"/logs?channel=system&limit=20", nil)
+	reqLogs.AddCookie(adminCookie)
+	respLogs, err := client.Do(reqLogs)
+	if err != nil || respLogs.StatusCode != http.StatusOK {
+		t.Fatalf("remote node logs failed: status=%d err=%v", respLogs.StatusCode, err)
+	}
+	var logsPayload struct {
+		Channel string `json:"channel"`
+	}
+	_ = json.NewDecoder(respLogs.Body).Decode(&logsPayload)
+	respLogs.Body.Close()
+	if logsPayload.Channel != "system" {
+		t.Fatalf("unexpected remote logs channel: %+v", logsPayload)
+	}
+
+	// 远程 SQLite 一致性备份下载（通过隧道返回 .tar.gz 与 SHA-256 头）
+	reqBackup, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/admin/cluster/nodes/"+createRes.Node.ID+"/backup/download", nil)
+	reqBackup.Header.Set("X-Requested-With", "FlowMaster")
+	reqBackup.AddCookie(adminCookie)
+	respBackup, err := client.Do(reqBackup)
+	if err != nil || respBackup.StatusCode != http.StatusOK {
+		t.Fatalf("remote node backup download failed: status=%d err=%v", respBackup.StatusCode, err)
+	}
+	archiveBytes, _ := io.ReadAll(respBackup.Body)
+	respBackup.Body.Close()
+	if len(archiveBytes) < 32 || archiveBytes[0] != 0x1f || archiveBytes[1] != 0x8b {
+		t.Fatalf("expected valid gzip archive from remote backup, got len=%d", len(archiveBytes))
+	}
+	if respBackup.Header.Get("X-Checksum-Sha256") == "" {
+		t.Fatalf("expected non-empty X-Checksum-Sha256 header on remote backup")
+	}
+
+	// 批量删除未确认应被拒绝，确认后成功移除
+	batchDelRejectBody, _ := json.Marshal(map[string]any{"nodeIds": []string{createRes.Node.ID}, "confirm": false})
+	reqBatchDelReject, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/admin/cluster/batch/delete", bytes.NewReader(batchDelRejectBody))
+	reqBatchDelReject.Header.Set("Content-Type", "application/json")
+	reqBatchDelReject.Header.Set("X-Requested-With", "FlowMaster")
+	reqBatchDelReject.AddCookie(adminCookie)
+	respBatchDelReject, err := client.Do(reqBatchDelReject)
+	if err != nil || respBatchDelReject.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unconfirmed batch delete, got %v", respBatchDelReject)
+	}
+	respBatchDelReject.Body.Close()
+
+	batchDelBody, _ := json.Marshal(map[string]any{"nodeIds": []string{createRes.Node.ID}, "confirm": true})
+	reqBatchDel, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/admin/cluster/batch/delete", bytes.NewReader(batchDelBody))
+	reqBatchDel.Header.Set("Content-Type", "application/json")
+	reqBatchDel.Header.Set("X-Requested-With", "FlowMaster")
+	reqBatchDel.AddCookie(adminCookie)
+	respBatchDel, err := client.Do(reqBatchDel)
+	if err != nil || respBatchDel.StatusCode != http.StatusOK {
+		t.Fatalf("batch delete node failed: status=%d err=%v", respBatchDel.StatusCode, err)
+	}
+	respBatchDel.Body.Close()
 }
