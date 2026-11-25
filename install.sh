@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# FlowMaster 一键安装、更新与维护脚本（支持 Docker 部署 & 二进制 systemd 部署）
-# - 自动识别中国大陆网络环境并启用多节点 GitHub 加速代理回退，防止下载超时出错
-# - 支持全新部署最新版、平滑更新已有版本（失败自动回滚）与安全卸载
+# FlowMaster 一键安装、更新、自动放行防火墙与多机集群接入脚本
+# - 支持 Docker 部署、静态二进制 (systemd) 部署、join 一键接入主控中心及智能更新
+# - 自动识别中国大陆网络环境并测速启用多节点 GitHub 加速代理，防止下载超时出错
+# - 默认启用 IPv4 + IPv6 双栈监听，并自动放行 UFW / Firewalld / iptables(含甲骨文规则) 端口
 # - 安全红线：任何操作均绝不修改或删除宿主机 /var/lib/vnstat 历史数据
 # ==============================================================================
 
@@ -14,11 +15,13 @@ readonly GHCR_IMAGE="${FLOWMASTER_GHCR_IMAGE:-ghcr.io/vbskycn/flowmaster}"
 readonly CONTAINER_NAME="${FLOWMASTER_CONTAINER_NAME:-flowmaster}"
 readonly DOCKER_DATA_DIR="${FLOWMASTER_DOCKER_DATA_DIR:-/opt/flowmaster/data}"
 
-readonly BIN_PATH="/usr/local/bin/flowmaster"
+readonly BIN_LINK="/usr/local/bin/flowmaster"
 readonly CTL_PATH="/usr/local/bin/flowmaster-ctl"
 readonly CONFIG_DIR="/etc/flowmaster"
 readonly ENV_FILE="${CONFIG_DIR}/flowmaster.env"
 readonly BIN_DATA_DIR="/var/lib/flowmaster"
+readonly MANAGED_BIN_DIR="${BIN_DATA_DIR}/bin"
+readonly MANAGED_BIN_PATH="${MANAGED_BIN_DIR}/flowmaster"
 readonly LEGACY_APP_DIR="/opt/flowmaster"
 readonly BACKUP_ROOT="${FLOWMASTER_BACKUP_ROOT:-/var/backups/flowmaster}"
 readonly LOCK_FILE="${FLOWMASTER_MAINTENANCE_LOCK_FILE:-/run/lock/flowmaster-maintenance.lock}"
@@ -37,14 +40,19 @@ LOCK_FD=""
 IS_CN_ENV=0
 ACTIVE_GH_PROXY=""
 
-# 内置 GitHub 代理候选池（国内环境自动按连通性择优并逐级回退，直连兜底）
+# join 子命令解析参数
+JOIN_HUB_URL=""
+JOIN_HUB_TOKEN=""
+JOIN_NODE_NAME=""
+JOIN_NO_WEB="false"
+JOIN_USE_DOCKER=0
+
 readonly DEFAULT_GH_PROXIES=(
     "https://gh-proxy.com/"
     "https://ghfast.top/"
     "https://ghproxy.net/"
 )
 
-# 内置 Docker 镜像加速前缀候选（当 Docker Hub 官方与 GHCR 直连均受阻时自动回退）
 readonly DEFAULT_DOCKER_MIRRORS=(
     "docker.1ms.run"
     "docker.xuanyuan.me"
@@ -120,7 +128,6 @@ build_proxied_url() {
     fi
 }
 
-# 自动识别国内网络环境并挑选真正返回有效内容的 GitHub 代理节点
 detect_network_and_proxy() {
     if [[ -n "${FLOWMASTER_GH_PROXY:-}" ]]; then
         IS_CN_ENV=1
@@ -140,7 +147,6 @@ detect_network_and_proxy() {
     if [[ "${FLOWMASTER_CN:-}" == "1" ]]; then
         IS_CN_ENV=1
     else
-        # 1) 通过 Cloudflare 边缘节点快速识别国家代码；2) 实测 GitHub Raw 直连延迟与可达性
         local cf_trace=""
         cf_trace="$(curl -fsSL --connect-timeout 2 --max-time 3 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
         if printf '%s\n' "$cf_trace" | grep -q '^loc=CN$'; then
@@ -174,7 +180,6 @@ detect_network_and_proxy() {
     warn "内置代理节点探测未命中，将依次尝试所有候选节点与官方直连兜底"
 }
 
-# 多节点容错下载 GitHub URL（当前代理失败自动切换其余代理与直连，防止单点故障）
 download_github_file() {
     local raw_url="$1"
     local dest_file="$2"
@@ -200,7 +205,6 @@ download_github_file() {
     for prefix in "${candidates[@]}"; do
         target_url="$(build_proxied_url "$prefix" "$raw_url")"
         if curl -fL --retry 2 --connect-timeout 6 --max-time 180 -o "$dest_file" "$target_url" 2>/dev/null && [[ -s "$dest_file" ]]; then
-            # 拒绝部分失效代理返回的 HTML 错误页面伪装成正常文件
             if ! head -c 64 "$dest_file" | grep -qi '<!doctype html\|<html'; then
                 return 0
             fi
@@ -210,7 +214,6 @@ download_github_file() {
     fail "无法下载文件: ${raw_url}（可通过 FLOWMASTER_GH_PROXY 指定可用代理或使用 FLOWMASTER_LOCAL_BIN 离线安装）"
 }
 
-# 三级容错获取远程最新正式版本号（不带前导 v，例如 2.0.0）
 resolve_target_version() {
     if [[ -n "${FLOWMASTER_VERSION:-}" && "${FLOWMASTER_VERSION}" != "latest" ]]; then
         echo "${FLOWMASTER_VERSION#v}"
@@ -218,7 +221,6 @@ resolve_target_version() {
     fi
 
     local ver=""
-    # 通道 1: GitHub Releases latest 302 跳转（不消耗 API 配额）
     if (( IS_CN_ENV == 0 )); then
         local final_url=""
         final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' --connect-timeout 4 --max-time 8 "https://github.com/${REPO_SLUG}/releases/latest" 2>/dev/null || true)"
@@ -227,14 +229,12 @@ resolve_target_version() {
         fi
     fi
 
-    # 通道 2: GitHub API
     if [[ -z "$ver" && "$IS_CN_ENV" -eq 0 ]]; then
         local api_json=""
         api_json="$(curl -fsSL --connect-timeout 4 --max-time 8 "https://api.github.com/repos/${REPO_SLUG}/releases/latest" 2>/dev/null || true)"
         ver="$(printf '%s' "$api_json" | sed -n 's/.*"tag_name":[[:space:]]*"v\?\([0-9][0-9.]*\)".*/\1/p' | head -n1)"
     fi
 
-    # 通道 3: 通过自动代理通道读取主分支 VERSION 唯一版本源（国内最稳妥通道）
     if [[ -z "$ver" ]]; then
         local ver_file="${TMP_DIR}/VERSION.remote"
         download_github_file "https://raw.githubusercontent.com/${REPO_SLUG}/main/VERSION" "$ver_file"
@@ -245,16 +245,95 @@ resolve_target_version() {
     echo "$ver"
 }
 
-get_installed_binary_version() {
-    if [[ -x "$BIN_PATH" ]]; then
-        local out ver
-        out="$("$BIN_PATH" --version 2>/dev/null || true)"
-        ver="$(printf '%s' "$out" | awk '{ gsub(/^v/, "", $NF); print $NF }')"
-        if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "$ver"
-            return 0
+# 自动放行本机已启用的防火墙端口（同时覆盖 IPv4 与 IPv6：UFW / Firewalld / Oracle Cloud iptables+ip6tables）
+open_firewall_port() {
+    local port="$1"
+    [[ "${FLOWMASTER_SKIP_FIREWALL:-0}" == "1" ]] && return 0
+    [[ "$port" =~ ^[0-9]+$ ]] || return 0
+
+    local opened_any=0
+
+    # 1. UFW（若处于 active 状态，自动同时放行 v4 和 v6）
+    if command -v ufw >/dev/null 2>&1; then
+        if LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
+            if ufw allow "${port}/tcp" >/dev/null 2>&1; then
+                log "已在 UFW 防火墙放行 TCP 端口 ${port} (IPv4/IPv6)"
+                opened_any=1
+            fi
         fi
     fi
+
+    # 2. Firewalld
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        if firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1; then
+            log "已在 Firewalld 防火墙放行 TCP 端口 ${port} (IPv4/IPv6)"
+            opened_any=1
+        fi
+    fi
+
+    # 3. iptables / ip6tables（兼容甲骨文云等默认存在 INPUT REJECT/DROP 拦截规则的系统）
+    if (( opened_any == 0 )); then
+        local ipt_changed=0
+        if command -v iptables >/dev/null 2>&1; then
+            local v4_rules=""
+            v4_rules="$(iptables -S INPUT 2>/dev/null || true)"
+            if printf '%s\n' "$v4_rules" | grep -qE '^-P INPUT DROP|-j (REJECT|DROP)'; then
+                if ! printf '%s\n' "$v4_rules" | grep -qE -- "--dport ${port}([[:space:]]|$).*-j ACCEPT"; then
+                    if iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+                        log "已在 iptables (IPv4) INPUT 链放行 TCP 端口 ${port}"
+                        ipt_changed=1
+                    fi
+                fi
+            fi
+        fi
+
+        if command -v ip6tables >/dev/null 2>&1; then
+            local v6_rules=""
+            v6_rules="$(ip6tables -S INPUT 2>/dev/null || true)"
+            if printf '%s\n' "$v6_rules" | grep -qE '^-P INPUT DROP|-j (REJECT|DROP)'; then
+                if ! printf '%s\n' "$v6_rules" | grep -qE -- "--dport ${port}([[:space:]]|$).*-j ACCEPT"; then
+                    if ip6tables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+                        log "已在 ip6tables (IPv6) INPUT 链放行 TCP 端口 ${port}"
+                        ipt_changed=1
+                    fi
+                fi
+            fi
+        fi
+
+        if (( ipt_changed == 1 )) && command -v netfilter-persistent >/dev/null 2>&1; then
+            netfilter-persistent save >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+print_access_urls() {
+    local port="$1"
+    local v4="" v6=""
+    v4="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' || true)"
+    v6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' || true)"
+    if [[ -n "$v4" ]]; then
+        log "IPv4 访问地址: http://${v4}:${port}"
+    else
+        log "IPv4 访问地址: http://服务器IPv4:${port}"
+    fi
+    if [[ -n "$v6" && "$v6" != fe80* && "$v6" != "::1" ]]; then
+        log "IPv6 访问地址: http://[${v6}]:${port}"
+    fi
+}
+
+get_installed_binary_version() {
+    local bin_candidate=""
+    for bin_candidate in "$MANAGED_BIN_PATH" "$BIN_LINK"; do
+        if [[ -x "$bin_candidate" ]]; then
+            local out ver
+            out="$("$bin_candidate" --version 2>/dev/null || true)"
+            ver="$(printf '%s' "$out" | awk '{ gsub(/^v/, "", $NF); print $NF }')"
+            if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "$ver"
+                return 0
+            fi
+        fi
+    done
     if [[ -f "${LEGACY_APP_DIR}/package.json" ]]; then
         local legacy_ver
         legacy_ver="$(sed -n 's/.*"version":[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "${LEGACY_APP_DIR}/package.json" | head -n1)"
@@ -276,14 +355,13 @@ detect_existing_mode() {
         echo "docker"
         return 0
     fi
-    if [[ -f "$SERVICE_FILE" || -x "$BIN_PATH" || -d "$LEGACY_APP_DIR" || -f /root/.pm2/dump.pm2 ]]; then
+    if [[ -f "$SERVICE_FILE" || -x "$MANAGED_BIN_PATH" || -x "$BIN_LINK" || -d "$LEGACY_APP_DIR" || -f /root/.pm2/dump.pm2 ]]; then
         echo "binary"
         return 0
     fi
     echo "none"
 }
 
-# 从 PM2 dump 文件中离线精准剔除旧版 flowmaster 条目，输出 "<移除数> <剩余其他应用数>"
 filter_pm2_dump_offline() {
     local dump_file="$1"
     [[ -f "$dump_file" && ! -L "$dump_file" ]] || { echo "0 0"; return 0; }
@@ -353,7 +431,6 @@ JS
     echo "0 0"
 }
 
-# 安全下线旧版 v1.x Node.js / PM2 托管的 flowmaster 进程，释放监听端口且绝不影响其他 PM2 应用
 retire_legacy_node_and_pm2() {
     local pm2_home="/root/.pm2"
     local dump_file="${pm2_home}/dump.pm2"
@@ -405,7 +482,6 @@ retire_legacy_node_and_pm2() {
     local unit dropin_dir
     if (( removed_cnt > 0 )); then
         for unit in "${pm2_units[@]}"; do
-            # 使用运行时临时空 ExecStop 绕开 PM2 5.x pm2 kill TreeKill 阻塞缺陷
             dropin_dir="/run/systemd/system/${unit}.d"
             mkdir -p -- "$dropin_dir"
             printf '[Service]\nExecStop=\n' >"${dropin_dir}/99-flowmaster-stop.conf"
@@ -428,7 +504,6 @@ retire_legacy_node_and_pm2() {
         done
     fi
 
-    # 精确清理任何残留的旧版 node .../flowmaster/server.js 进程
     for proc_dir in /proc/[0-9]*; do
         [[ -r "${proc_dir}/cmdline" ]] || continue
         pid="${proc_dir#/proc/}"
@@ -473,8 +548,21 @@ verify_http_health() {
     return 1
 }
 
+upsert_env_key() {
+    local file="$1"
+    local key="$2"
+    local val="$3"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        local tmp_env="${file}.tmp.$$"
+        awk -v k="$key" -v v="$val" 'BEGIN{FS=OFS="="} $1==k {print k"="v; next} {print}' "$file" >"$tmp_env"
+        mv -- "$tmp_env" "$file"
+    else
+        printf '%s=%s\n' "$key" "$val" >>"$file"
+    fi
+}
+
 # ==============================================================================
-# 模式一：Docker 部署与平滑更新（支持国内镜像加速回退 + 失败自动回滚）
+# 模式一：Docker 部署与平滑更新
 # ==============================================================================
 pull_flowmaster_image() {
     local version="$1"
@@ -482,7 +570,6 @@ pull_flowmaster_image() {
     local candidates=()
 
     if (( IS_CN_ENV == 1 )); then
-        # 优先尝试直连可达率更高的 GHCR 与宿主机 daemon.json 已配置的官方源，超时再回退公共镜像代理
         candidates+=("${GHCR_IMAGE}:${version}")
         candidates+=("${DOCKERHUB_IMAGE}:${version}")
         local m
@@ -530,18 +617,29 @@ deploy_or_update_docker() {
     if [[ -n "$current_ver" ]]; then
         info "检测到已存在的 Docker 容器 (${CONTAINER_NAME})，当前版本: v${current_ver}，目标版本: v${target_ver}"
     else
-        info "准备通过 Docker 全新部署 FlowMaster v${target_ver}"
+        info "准备通过 Docker 部署 FlowMaster v${target_ver}"
     fi
 
     local port="${FLOWMASTER_PORT:-10089}"
     local data_dir="$DOCKER_DATA_DIR"
     local prev_image_id=""
+    local hub_url="${JOIN_HUB_URL:-}"
+    local hub_tok="${JOIN_HUB_TOKEN:-}"
+    local node_nm="${JOIN_NODE_NAME:-}"
+    local dis_web="${JOIN_NO_WEB:-false}"
 
     if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
         prev_image_id="$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
-        local existing_port
-        existing_port="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null | awk -F= '$1=="PORT"{print $2; exit}')"
-        [[ -n "${FLOWMASTER_PORT:-}" ]] || port="${existing_port:-10089}"
+        local existing_envs
+        existing_envs="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+        if [[ -z "${FLOWMASTER_PORT:-}" ]]; then
+            local ep
+            ep="$(printf '%s\n' "$existing_envs" | awk -F= '$1=="PORT"{print $2; exit}')"
+            port="${ep:-10089}"
+        fi
+        [[ -n "$hub_url" ]] || hub_url="$(printf '%s\n' "$existing_envs" | awk -F= '$1=="HUB_URL"{sub(/^[^=]*=/, ""); print; exit}')"
+        [[ -n "$hub_tok" ]] || hub_tok="$(printf '%s\n' "$existing_envs" | awk -F= '$1=="HUB_TOKEN"{sub(/^[^=]*=/, ""); print; exit}')"
+        [[ -n "$node_nm" ]] || node_nm="$(printf '%s\n' "$existing_envs" | awk -F= '$1=="NODE_NAME"{sub(/^[^=]*=/, ""); print; exit}')"
 
         local existing_mount
         existing_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)"
@@ -558,12 +656,17 @@ deploy_or_update_docker() {
         vnstat_args=(-v /var/lib/vnstat:/var/lib/vnstat:ro -e VNSTAT_DB_DIR=/var/lib/vnstat)
     fi
 
-    # 仅在默认标准容器名接管生产部署时，自动下线同机旧版 PM2/Node 实例与旧 systemd 服务以防端口冲突
+    local cluster_args=()
+    [[ -n "$hub_url" ]] && cluster_args+=(-e "HUB_URL=${hub_url}")
+    [[ -n "$hub_tok" ]] && cluster_args+=(-e "HUB_TOKEN=${hub_tok}")
+    [[ -n "$node_nm" ]] && cluster_args+=(-e "NODE_NAME=${node_nm}")
+    [[ "$dis_web" == "true" ]] && cluster_args+=(-e "DISABLE_WEB=true")
+
     if [[ "$CONTAINER_NAME" == "flowmaster" ]]; then
         retire_legacy_node_and_pm2
         if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null || systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-            warn "检测到宿主机 systemd 服务 ${SERVICE_NAME} 正在运行，已停止该服务以交由 Docker 容器接管端口"
-            systemctl stop "$SERVICE_NAME" || true
+            warn "检测到宿主机 systemd 服务 ${SERVICE_NAME}，已停止该服务以交由 Docker 容器接管端口"
+            systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
             systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
         fi
     fi
@@ -575,39 +678,46 @@ deploy_or_update_docker() {
         --restart unless-stopped \
         --network host \
         -e TZ="${TZ:-Asia/Shanghai}" \
-        -e HOST="${FLOWMASTER_HOST:-0.0.0.0}" \
+        -e HOST="${FLOWMASTER_HOST:-::}" \
         -e PORT="$port" \
         -e DATA_DIR=/data \
         -v "${data_dir}:/data" \
         "${vnstat_args[@]}" \
+        "${cluster_args[@]}" \
         "${DOCKERHUB_IMAGE}:${target_ver}" >/dev/null
 
-    if ! verify_http_health "$port" "$target_ver"; then
-        warn "新容器健康检查未通过，正在尝试回滚..."
-        docker logs "$CONTAINER_NAME" --tail 30 >&2 || true
-        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        if [[ -n "$prev_image_id" ]]; then
-            docker run -d \
-                --name "$CONTAINER_NAME" \
-                --restart unless-stopped \
-                --network host \
-                -e TZ="${TZ:-Asia/Shanghai}" \
-                -e PORT="$port" \
-                -e DATA_DIR=/data \
-                -v "${data_dir}:/data" \
-                "${vnstat_args[@]}" \
-                "$prev_image_id" >/dev/null || true
+    if [[ "$dis_web" != "true" ]]; then
+        if ! verify_http_health "$port" "$target_ver"; then
+            warn "新容器健康检查未通过，正在尝试回滚..."
+            docker logs "$CONTAINER_NAME" --tail 30 >&2 || true
+            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            if [[ -n "$prev_image_id" ]]; then
+                docker run -d \
+                    --name "$CONTAINER_NAME" \
+                    --restart unless-stopped \
+                    --network host \
+                    -e TZ="${TZ:-Asia/Shanghai}" \
+                    -e HOST="${FLOWMASTER_HOST:-::}" \
+                    -e PORT="$port" \
+                    -e DATA_DIR=/data \
+                    -v "${data_dir}:/data" \
+                    "${vnstat_args[@]}" \
+                    "${cluster_args[@]}" \
+                    "$prev_image_id" >/dev/null || true
+            fi
+            fail "Docker 容器启动验证失败"
         fi
-        fail "Docker 容器启动验证失败"
+        open_firewall_port "$port"
+        print_access_urls "$port"
     fi
 
     log "✅ FlowMaster v${target_ver} (Docker 模式) 部署/更新完成！"
-    log "访问地址: http://服务器IP:${port}"
+    [[ -n "$hub_url" ]] && log "已连接上报主控中心: ${hub_url}"
     log "持久化目录: ${data_dir}（宿主机 /var/lib/vnstat 保持只读未修改）"
 }
 
 # ==============================================================================
-# 模式二：二进制 + systemd 部署与平滑更新（支持自动代理 + SHA-256 校验 + 回滚）
+# 模式二：二进制 + systemd 部署与平滑更新（支持远程一键自升级）
 # ==============================================================================
 ensure_service_user() {
     if ! getent group "$SERVICE_USER" >/dev/null 2>&1; then
@@ -662,19 +772,17 @@ resolve_binary_artifact() {
 }
 
 prepare_binary_dirs_and_env() {
-    mkdir -p -- "$CONFIG_DIR" "$BIN_DATA_DIR" "$BACKUP_ROOT"
-    chmod 0750 "$CONFIG_DIR" "$BIN_DATA_DIR" "$BACKUP_ROOT"
+    mkdir -p -- "$CONFIG_DIR" "$BIN_DATA_DIR" "$MANAGED_BIN_DIR" "$BACKUP_ROOT"
+    chmod 0750 "$CONFIG_DIR" "$BIN_DATA_DIR" "$MANAGED_BIN_DIR" "$BACKUP_ROOT"
 
     if [[ ! -f "$ENV_FILE" ]]; then
         if [[ -f "${LEGACY_APP_DIR}/.env" && ! -L "${LEGACY_APP_DIR}/.env" ]]; then
             log "检测到旧版配置 ${LEGACY_APP_DIR}/.env，已自动迁移至 ${ENV_FILE}"
             cp -- "${LEGACY_APP_DIR}/.env" "$ENV_FILE"
-            if ! grep -q '^DATA_DIR=' "$ENV_FILE"; then
-                printf '\nDATA_DIR=%s\n' "$BIN_DATA_DIR" >>"$ENV_FILE"
-            fi
+            upsert_env_key "$ENV_FILE" "DATA_DIR" "$BIN_DATA_DIR"
         else
             cat >"$ENV_FILE" <<EOF
-HOST=0.0.0.0
+HOST=::
 PORT=${FLOWMASTER_PORT:-10089}
 DATA_DIR=${BIN_DATA_DIR}
 REALTIME_INTERVAL_MS=1000
@@ -684,13 +792,25 @@ EOF
         fi
     fi
 
+    # 兼容之前写为 HOST=0.0.0.0 的默认配置平滑升级至双栈 HOST=::
+    if grep -q '^HOST=0\.0\.0\.0$' "$ENV_FILE" 2>/dev/null && [[ -z "${FLOWMASTER_HOST:-}" ]]; then
+        upsert_env_key "$ENV_FILE" "HOST" "::"
+    fi
+    [[ -n "${FLOWMASTER_PORT:-}" ]] && upsert_env_key "$ENV_FILE" "PORT" "$FLOWMASTER_PORT"
+
+    if [[ -n "$JOIN_HUB_URL" ]]; then
+        upsert_env_key "$ENV_FILE" "HUB_URL" "$JOIN_HUB_URL"
+        upsert_env_key "$ENV_FILE" "HUB_TOKEN" "$JOIN_HUB_TOKEN"
+        [[ -n "$JOIN_NODE_NAME" ]] && upsert_env_key "$ENV_FILE" "NODE_NAME" "$JOIN_NODE_NAME"
+        upsert_env_key "$ENV_FILE" "DISABLE_WEB" "$JOIN_NO_WEB"
+    fi
+
     chown root:"$SERVICE_USER" "$CONFIG_DIR" "$ENV_FILE"
     chmod 0750 "$CONFIG_DIR"
     chmod 0640 "$ENV_FILE"
     chown -R "$SERVICE_USER":"$SERVICE_USER" "$BIN_DATA_DIR"
-    chmod 0750 "$BIN_DATA_DIR"
+    chmod 0750 "$BIN_DATA_DIR" "$MANAGED_BIN_DIR"
 
-    # 若旧版 /opt/flowmaster 包含 server.js（v1.x Node 版），安全归档避免混淆，绝不误动 Docker /opt/flowmaster/data
     if [[ -f "${LEGACY_APP_DIR}/server.js" && ! -L "$LEGACY_APP_DIR" ]]; then
         local legacy_archive ts
         ts="$(date +%Y%m%d-%H%M%S)"
@@ -706,9 +826,10 @@ write_systemd_unit_and_ctl() {
         supp_line="SupplementaryGroups=vnstat"
     fi
 
+    # Restart=always 确保通过主控网页触发远程原子自升级 (exit 0) 后，systemd 自动拉起新版进程
     cat >"$SERVICE_FILE" <<EOF
 [Unit]
-Description=FlowMaster Lightweight Network Traffic Monitor
+Description=FlowMaster Lightweight Network Traffic Monitor & Agent
 After=network-online.target vnstat.service
 Wants=network-online.target
 
@@ -719,9 +840,9 @@ Group=${SERVICE_USER}
 ${supp_line}
 WorkingDirectory=${BIN_DATA_DIR}
 EnvironmentFile=-${ENV_FILE}
-ExecStart=${BIN_PATH} -env-file ${ENV_FILE}
-Restart=on-failure
-RestartSec=3
+ExecStart=${MANAGED_BIN_PATH} -env-file ${ENV_FILE}
+Restart=always
+RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -732,6 +853,8 @@ ReadWritePaths=${BIN_DATA_DIR}
 WantedBy=multi-user.target
 EOF
     chmod 0644 "$SERVICE_FILE"
+
+    ln -sfn "$MANAGED_BIN_PATH" "$BIN_LINK"
 
     cat >"$CTL_PATH" <<'EOF'
 #!/usr/bin/env bash
@@ -758,9 +881,9 @@ deploy_or_update_binary() {
     current_ver="$(get_installed_binary_version)"
 
     if [[ -n "$current_ver" ]]; then
-        info "检测到已安装的二进制版本: v${current_ver}，准备更新至: v${target_ver}"
+        info "检测到已安装版本: v${current_ver}，准备更新至: v${target_ver}"
     else
-        info "准备全新部署二进制版 FlowMaster (${target_ver})"
+        info "准备部署二进制版 FlowMaster (${target_ver})"
     fi
 
     local staged_bin="${TMP_DIR}/flowmaster.bin"
@@ -770,11 +893,13 @@ deploy_or_update_binary() {
 
     ensure_service_user
 
-    # 仅当 /usr/local/bin/flowmaster 是有效的新版 Go 二进制时才保存回滚副本（防止把旧版 v1 同名 Shell 脚本误当成二进制回滚）
     local prev_bin_backup=""
-    if [[ -x "$BIN_PATH" ]] && "$BIN_PATH" --version 2>/dev/null | grep -q '^FlowMaster v[0-9]'; then
+    if [[ -x "$MANAGED_BIN_PATH" ]] && "$MANAGED_BIN_PATH" --version 2>/dev/null | grep -q '^FlowMaster v[0-9]'; then
         prev_bin_backup="${TMP_DIR}/flowmaster.prev"
-        cp -p -- "$BIN_PATH" "$prev_bin_backup"
+        cp -p -- "$MANAGED_BIN_PATH" "$prev_bin_backup"
+    elif [[ -f "$BIN_LINK" && ! -L "$BIN_LINK" ]] && "$BIN_LINK" --version 2>/dev/null | grep -q '^FlowMaster v[0-9]'; then
+        prev_bin_backup="${TMP_DIR}/flowmaster.prev"
+        cp -p -- "$BIN_LINK" "$prev_bin_backup"
     fi
 
     retire_legacy_node_and_pm2
@@ -785,36 +910,98 @@ deploy_or_update_binary() {
 
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
     prepare_binary_dirs_and_env
-    install -m 0755 "$staged_bin" "$BIN_PATH"
+    install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$staged_bin" "$MANAGED_BIN_PATH"
     write_systemd_unit_and_ctl
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" >/dev/null
     systemctl restart "$SERVICE_NAME"
 
     local port="10089"
+    local disable_web="false"
     if [[ -f "$ENV_FILE" ]]; then
-        local parsed_port
+        local parsed_port parsed_dis
         parsed_port="$(awk -F= '/^[[:space:]]*PORT=[0-9]+/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$ENV_FILE")"
+        parsed_dis="$(awk -F= '/^[[:space:]]*DISABLE_WEB=/ { gsub(/[[:space:]]/, "", $2); print tolower($2); exit }' "$ENV_FILE")"
         [[ -n "$parsed_port" ]] && port="$parsed_port"
+        [[ -n "$parsed_dis" ]] && disable_web="$parsed_dis"
     fi
 
-    if ! verify_http_health "$port" "$actual_bin_ver"; then
-        warn "新版本服务健康检查未通过，正在处理回滚..."
-        if [[ -n "$prev_bin_backup" && -f "$prev_bin_backup" ]]; then
-            install -m 0755 "$prev_bin_backup" "$BIN_PATH"
-            systemctl restart "$SERVICE_NAME" || true
-        else
-            systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-            systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-            rm -f -- "$SERVICE_FILE"
-            systemctl daemon-reload >/dev/null 2>&1 || true
+    if [[ "$disable_web" == "true" ]]; then
+        sleep 2
+        if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+            fail "纯探针模式服务启动失败，请执行 journalctl -u flowmaster.service -n 50 查看原因"
         fi
-        fail "systemd 服务启动验证失败，请执行 journalctl -u flowmaster.service -n 50 查看原因"
+    else
+        if ! verify_http_health "$port" "$actual_bin_ver"; then
+            warn "新版本服务健康检查未通过，正在处理回滚..."
+            if [[ -n "$prev_bin_backup" && -f "$prev_bin_backup" ]]; then
+                install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$prev_bin_backup" "$MANAGED_BIN_PATH"
+                systemctl restart "$SERVICE_NAME" || true
+            else
+                systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+                systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+                rm -f -- "$SERVICE_FILE" "$BIN_LINK"
+                systemctl daemon-reload >/dev/null 2>&1 || true
+            fi
+            fail "systemd 服务启动验证失败，请执行 journalctl -u flowmaster.service -n 50 查看原因"
+        fi
+        open_firewall_port "$port"
+        print_access_urls "$port"
     fi
 
-    log "✅ FlowMaster v${actual_bin_ver} (systemd 二进制模式) 部署/更新完成！"
-    log "访问地址: http://服务器IP:${port}"
+    log "✅ FlowMaster v${actual_bin_ver} (systemd 二进制模式，支持主控网页一键远程升级) 部署完成！"
+    [[ -n "$JOIN_HUB_URL" ]] && log "已连接上报主控中心: ${JOIN_HUB_URL}"
     log "配置文件: ${ENV_FILE} | 数据目录: ${BIN_DATA_DIR}"
+}
+
+parse_and_run_join() {
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --hub|--server)
+                JOIN_HUB_URL="${2:-}"
+                shift 2
+                ;;
+            --token)
+                JOIN_HUB_TOKEN="${2:-}"
+                shift 2
+                ;;
+            --name)
+                JOIN_NODE_NAME="${2:-}"
+                shift 2
+                ;;
+            --port)
+                export FLOWMASTER_PORT="${2:-10089}"
+                shift 2
+                ;;
+            --no-web)
+                JOIN_NO_WEB="true"
+                shift
+                ;;
+            --docker)
+                JOIN_USE_DOCKER=1
+                shift
+                ;;
+            *)
+                fail "未知的 join 参数: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$JOIN_HUB_URL" && -n "$JOIN_HUB_TOKEN" ]] || fail "join 模式必须同时提供 --hub <主控地址> 与 --token <节点密钥>"
+    if (( JOIN_USE_DOCKER == 1 )); then
+        deploy_or_update_docker
+    else
+        deploy_or_update_binary
+    fi
+}
+
+interactive_join_prompt() {
+    read -r -p "请输入主控中心地址 (例如 http://1.2.3.4:10089 或 https://hub.example.com): " JOIN_HUB_URL
+    read -r -p "请输入主控生成的节点 Token (fm_...): " JOIN_HUB_TOKEN
+    read -r -p "请输入本机展示名称 (留空自动使用主机名): " JOIN_NODE_NAME
+    [[ -n "$JOIN_HUB_URL" && -n "$JOIN_HUB_TOKEN" ]] || fail "主控地址与节点 Token 不能为空"
+    deploy_or_update_binary
 }
 
 do_smart_update() {
@@ -869,11 +1056,11 @@ do_uninstall() {
         info "正在停止并移除 Docker 容器 ${CONTAINER_NAME}..."
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
-    if [[ -f "$SERVICE_FILE" || -x "$BIN_PATH" ]]; then
+    if [[ -f "$SERVICE_FILE" || -L "$BIN_LINK" || -f "$BIN_LINK" || -x "$MANAGED_BIN_PATH" ]]; then
         info "正在停止并移除 systemd 服务 ${SERVICE_NAME}..."
         systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
         systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-        rm -f -- "$SERVICE_FILE" "$BIN_PATH" "$CTL_PATH"
+        rm -f -- "$SERVICE_FILE" "$BIN_LINK" "$CTL_PATH" "$MANAGED_BIN_PATH"
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     log "✅ FlowMaster 运行实例已卸载。"
@@ -884,7 +1071,7 @@ show_menu() {
     local existing_mode
     existing_mode="$(detect_existing_mode)"
     echo "========================================================="
-    echo "  FlowMaster 轻量流量监控 一键部署与更新脚本"
+    echo "  FlowMaster 轻量流量监控与多机中枢 一键部署脚本"
     if (( IS_CN_ENV == 1 )); then
         echo "  网络环境: 中国大陆加速模式 (代理: ${ACTIVE_GH_PROXY:-自动轮询})"
     else
@@ -892,20 +1079,22 @@ show_menu() {
     fi
     echo "  当前检测: ${existing_mode}"
     echo "========================================================="
-    echo "  1) Docker 部署 / 更新至最新版（推荐，单容器隔离运行）"
-    echo "  2) 二进制部署 / 更新至最新版（systemd 守护，极致省内存）"
-    echo "  3) 智能一键更新已安装的实例"
-    echo "  4) 查看运行状态与当前版本"
-    echo "  5) 卸载 FlowMaster（保留历史流量数据库）"
+    echo "  1) Docker 部署 / 更新至最新版（适合单机或主控中枢）"
+    echo "  2) 二进制部署 / 更新至最新版（systemd 守护，支持远程自升级）"
+    echo "  3) 作为被控节点接入主控中心（同时开启本机 10089 面板并放行防火墙）"
+    echo "  4) 智能一键更新已安装的实例"
+    echo "  5) 查看运行状态与当前版本"
+    echo "  6) 卸载 FlowMaster（保留历史流量数据库）"
     echo "  0) 退出"
     echo "========================================================="
     read -r -p "请输入数字选择操作 [1]: " choice
     case "${choice:-1}" in
         1) deploy_or_update_docker ;;
         2) deploy_or_update_binary ;;
-        3) do_smart_update ;;
-        4) show_status ;;
-        5) do_uninstall ;;
+        3) interactive_join_prompt ;;
+        4) do_smart_update ;;
+        5) show_status ;;
+        6) do_uninstall ;;
         0) exit 0 ;;
         *) fail "无效的选项: ${choice}" ;;
     esac
@@ -915,22 +1104,24 @@ main() {
     local action="${1:-}"
     if [[ "$action" == "-h" || "$action" == "--help" || "$action" == "help" ]]; then
         cat <<'EOF'
-用法: sudo ./install.sh [命令]
+用法: sudo ./install.sh [命令] [选项]
 
 可用命令:
   (无参数)    启动交互式部署与维护菜单
-  docker      使用 Docker 部署或平滑更新至最新版本
-  binary      使用静态二进制 + systemd 部署或平滑更新至最新版本
+  docker      使用 Docker 部署或平滑更新至最新版本（自动放行防火墙端口）
+  binary      使用静态二进制 + systemd 部署或平滑更新至最新版本（自动放行防火墙端口）
+  join        作为被控节点一键安装并接入主控中心:
+              sudo ./install.sh join --hub 'http://主控IP:10089' --token 'fm_...' [--name '节点名'] [--no-web]
   update      自动识别当前部署方式（Docker 或二进制）并更新至最新版本
   status      查看当前安装模式、版本号与运行状态
   uninstall   卸载容器或二进制服务（保留全部流量数据与 /var/lib/vnstat）
 
 可选环境变量:
-  FLOWMASTER_VERSION=v2.0.0           指定安装固定版本（默认 latest）
-  FLOWMASTER_PORT=10089               指定监听端口（默认 10089）
+  FLOWMASTER_VERSION=v2.1.0           指定安装固定版本（默认 latest）
+  FLOWMASTER_PORT=10089               指定监听端口（默认 10089，IPv4/IPv6 双栈）
+  FLOWMASTER_SKIP_FIREWALL=1          跳过自动放行系统防火墙端口
   FLOWMASTER_CN=1                     1=强制国内加速模式, 0=强制官方直连
   FLOWMASTER_GH_PROXY=https://...     自定义 GitHub 代理加速前缀
-  FLOWMASTER_DOCKER_DATA_DIR=/path    自定义 Docker 持久化宿主机目录
 EOF
         exit 0
     fi
@@ -947,6 +1138,7 @@ EOF
         "") show_menu ;;
         docker|--docker) deploy_or_update_docker ;;
         binary|install|--binary|--install) deploy_or_update_binary ;;
+        join|--join) parse_and_run_join "$@" ;;
         update|upgrade|--update) do_smart_update ;;
         status|--status) show_status ;;
         uninstall|--uninstall) do_uninstall ;;

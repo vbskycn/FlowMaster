@@ -5,16 +5,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// Config 保存服务启动期的运行环境配置。
+// Config 保存服务启动期的运行环境配置（含单机/主控双栈监听与可选被控上报配置）。
 type Config struct {
 	Host                 string
 	Port                 int
+	DisableWeb           bool
 	DataDir              string
 	ProcNetDevPath       string
 	SysClassNetPath      string
@@ -34,6 +36,32 @@ type Config struct {
 	TrustProxy           bool
 	InstanceToken        string
 	SessionSecret        []byte
+
+	// 被控节点连接到主控中心的可选参数（非空时自动启动 Agent 主动长连接/心跳上报）
+	HubURL    string
+	HubToken  string
+	NodeName  string
+}
+
+// ListenAddr 生成双栈友好的 HTTP 监听地址：
+// - 当 HOST 为空、"::"、"[::]" 或 "0.0.0.0" 时返回 ":PORT"，使 Linux Go net.Listen 默认启用 IPv4+IPv6 双栈监听；
+// - 当 HOST 为特定 IPv4 或特定 IPv6（如 "127.0.0.1" 或 "::1"）时使用 net.JoinHostPort 规范拼接。
+func (c *Config) ListenAddr() string {
+	h := strings.TrimSpace(c.Host)
+	if h == "" || h == "::" || h == "[::]" || h == "0.0.0.0" {
+		return fmt.Sprintf(":%d", c.Port)
+	}
+	h = strings.Trim(h, "[]")
+	return net.JoinHostPort(h, strconv.Itoa(c.Port))
+}
+
+// DisplayListenAddr 返回用于启动日志展示的可读监听地址。
+func (c *Config) DisplayListenAddr() string {
+	addr := c.ListenAddr()
+	if strings.HasPrefix(addr, ":") {
+		return "[::]" + addr + " (IPv4/IPv6 双栈)"
+	}
+	return addr
 }
 
 // LoadDotEnv 从指定路径加载 .env 文件，不覆盖进程已存在的环境变量。
@@ -118,7 +146,7 @@ func Load() (*Config, error) {
 
 	host := strings.TrimSpace(os.Getenv("HOST"))
 	if host == "" {
-		host = "0.0.0.0"
+		host = "::"
 	}
 
 	procNetPath := strings.TrimSpace(os.Getenv("PROC_NET_DEV_PATH"))
@@ -149,6 +177,7 @@ func Load() (*Config, error) {
 	return &Config{
 		Host:                 host,
 		Port:                 ParseIntInRange(os.Getenv("PORT"), 10089, 1, 65535),
+		DisableWeb:           ParseBool(os.Getenv("DISABLE_WEB"), false),
 		DataDir:              absDataDir,
 		ProcNetDevPath:       procNetPath,
 		SysClassNetPath:      sysClassPath,
@@ -168,6 +197,9 @@ func Load() (*Config, error) {
 		TrustProxy:           ParseBool(os.Getenv("TRUST_PROXY"), false),
 		InstanceToken:        strings.TrimSpace(os.Getenv("FLOWMASTER_INSTANCE_TOKEN")),
 		SessionSecret:        secret,
+		HubURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_URL")), "/"),
+		HubToken:             strings.TrimSpace(os.Getenv("HUB_TOKEN")),
+		NodeName:             strings.TrimSpace(os.Getenv("NODE_NAME")),
 	}, nil
 }
 

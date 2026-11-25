@@ -43,7 +43,7 @@ RUN apk add --no-cache ca-certificates tzdata vnstat && \
 
 COPY --from=go-builder /out/flowmaster /usr/local/bin/flowmaster
 
-ENV HOST=0.0.0.0 \
+ENV HOST=:: \
     PORT=10089 \
     DATA_DIR=/data \
     TZ=Asia/Shanghai

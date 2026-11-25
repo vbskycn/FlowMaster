@@ -181,13 +181,15 @@ type InterfaceSysMeta struct {
 	SpeedMbps int
 	MAC       string
 	IPv4      []string
+	IPv6      []string
 }
 
-// ReadInterfaceSysMeta 读取指定网卡的状态、协商速率、MAC 与 IPv4 地址列表。
+// ReadInterfaceSysMeta 读取指定网卡的状态、协商速率、MAC 与 IPv4/全局 IPv6 地址列表。
 func ReadInterfaceSysMeta(name, sysClassNetPath string) InterfaceSysMeta {
 	meta := InterfaceSysMeta{
 		OperState: "unknown",
 		IPv4:      []string{},
+		IPv6:      []string{},
 	}
 	if sysClassNetPath != "" {
 		base := filepath.Join(sysClassNetPath, name)
@@ -226,8 +228,14 @@ func ReadInterfaceSysMeta(name, sysClassNetPath string) InterfaceSysMeta {
 				case *net.IPAddr:
 					ip = v.IP
 				}
-				if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() {
+				if ip == nil || ip.IsLoopback() {
+					continue
+				}
+				if ip4 := ip.To4(); ip4 != nil {
 					meta.IPv4 = append(meta.IPv4, ip4.String())
+				} else if ip.IsGlobalUnicast() {
+					// 仅收集全局单播/ULA IPv6，自动排除 fe80:: 链路本地地址
+					meta.IPv6 = append(meta.IPv6, ip.String())
 				}
 			}
 		}

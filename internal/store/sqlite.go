@@ -110,6 +110,22 @@ CREATE TABLE IF NOT EXISTS traffic_monthly (
 	PRIMARY KEY (iface, month_ym)
 );
 
+CREATE TABLE IF NOT EXISTS cluster_nodes (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	group_name TEXT NOT NULL DEFAULT '',
+	remark TEXT NOT NULL DEFAULT '',
+	token_hash TEXT NOT NULL UNIQUE,
+	token_mask TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	last_seen INTEGER NOT NULL DEFAULT 0,
+	last_ip TEXT NOT NULL DEFAULT '',
+	version TEXT NOT NULL DEFAULT '',
+	hostname TEXT NOT NULL DEFAULT '',
+	os TEXT NOT NULL DEFAULT '',
+	arch TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_traffic_5m_ts ON traffic_5m(bucket_ts);
 CREATE INDEX IF NOT EXISTS idx_traffic_hourly_ts ON traffic_hourly(bucket_ts);
 CREATE INDEX IF NOT EXISTS idx_traffic_daily_date ON traffic_daily(day_date);

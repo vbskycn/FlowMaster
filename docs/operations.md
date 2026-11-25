@@ -11,8 +11,12 @@
 2. **常用维护子命令**：
    - `sudo ./install.sh docker`：部署或更新 Docker 容器（更新异常自动回退旧镜像 ID）
    - `sudo ./install.sh binary`：部署或更新二进制 `systemd` 服务（更新异常自动回退旧二进制）
+   - `sudo ./install.sh join --hub <URL> --token <TOKEN> [--name <节点名>] [--no-web] [--docker]`：一键安装并作为子节点接入主控机 Hub（默认同时保留本机 `10089` Web 页面与自动放行防火墙）
    - `sudo ./install.sh update`：自动检测当前部署模式并平滑更新至最新版本
    - `sudo ./install.sh status` / `sudo ./install.sh uninstall`
+3. **自动放行宿主机防火墙与 IPv6 双栈**：
+   - 默认监听 `HOST=::`（双栈同时监听 IPv4 与 IPv6 的 `10089` 端口）。
+   - 安装或接入节点（未开启 `--no-web`）时，`install.sh` 自动识别并放行 `UFW`、`Firewalld` 或 `iptables`/`ip6tables`（含甲骨文云 Ubuntu 默认 `INPUT REJECT` 规则前置插入与持久化保存）；如前置反代不需要直通端口，可通过 `FLOWMASTER_SKIP_FIREWALL=1` 跳过防火墙变更。
 
 ---
 

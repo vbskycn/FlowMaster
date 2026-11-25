@@ -394,6 +394,7 @@ func (e *Engine) ListInterfaces(ctx context.Context, includeHidden bool) ([]mode
 			SpeedMbps:     sysMeta.SpeedMbps,
 			MAC:           sysMeta.MAC,
 			IPv4:          sysMeta.IPv4,
+			IPv6:          sysMeta.IPv6,
 			RxBytesKernel: kc.RxBytes,
 			TxBytesKernel: kc.TxBytes,
 			HasSQLiteData: sqliteSet[name],

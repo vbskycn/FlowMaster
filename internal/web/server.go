@@ -19,12 +19,14 @@ import (
 	"time"
 
 	flowmaster "github.com/vbskycn/flowmaster"
+	"github.com/vbskycn/flowmaster/internal/cluster"
 	"github.com/vbskycn/flowmaster/internal/collector"
 	"github.com/vbskycn/flowmaster/internal/config"
 	"github.com/vbskycn/flowmaster/internal/logger"
 	"github.com/vbskycn/flowmaster/internal/model"
 	"github.com/vbskycn/flowmaster/internal/quota"
 	"github.com/vbskycn/flowmaster/internal/store"
+	"github.com/vbskycn/flowmaster/internal/updater"
 )
 
 type rateBucket struct {
@@ -32,17 +34,19 @@ type rateBucket struct {
 	resetAt time.Time
 }
 
-// Server 承载现代 /api/v1/*、SSE 实时流、旧版 /api/* 兼容层与内嵌 Web 前端。
+// Server 承载现代 /api/v1/*、SSE 实时流、多机集群管理、旧版 /api/* 兼容层与内嵌 Web 前端。
 type Server struct {
-	cfg       *config.Config
-	store     *store.Store
-	backups   *store.BackupManager
-	engine    *collector.Engine
-	vnstat    *collector.VnstatClient
-	quotaSvc  *quota.Service
-	log       *logger.Manager
+	cfg        *config.Config
+	store      *store.Store
+	backups    *store.BackupManager
+	engine     *collector.Engine
+	vnstat     *collector.VnstatClient
+	quotaSvc   *quota.Service
+	updater    *updater.Manager
+	hub        *cluster.Hub
+	log        *logger.Manager
 	loginGuard *LoginProtector
-	startedAt time.Time
+	startedAt  time.Time
 
 	rlMu      sync.Mutex
 	rlBuckets map[string]*rateBucket
@@ -60,6 +64,7 @@ func NewServer(
 	vn *collector.VnstatClient,
 	qs *quota.Service,
 	log *logger.Manager,
+	opts ...any,
 ) (*Server, error) {
 	sub, err := fs.Sub(flowmaster.WebDistFS, "web/dist")
 	if err != nil {
@@ -77,6 +82,23 @@ func NewServer(
 		log.Info("已从环境变量 ADMIN_PASSWORD 初始化管理员登录密码")
 	}
 
+	var up *updater.Manager
+	var hb *cluster.Hub
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case *updater.Manager:
+			up = v
+		case *cluster.Hub:
+			hb = v
+		}
+	}
+	if up == nil {
+		up = updater.NewManager(log, nil)
+	}
+	if hb == nil {
+		hb = cluster.NewHub(cfg, st, eng, qs, up, log)
+	}
+
 	return &Server{
 		cfg:        cfg,
 		store:      st,
@@ -84,6 +106,8 @@ func NewServer(
 		engine:     eng,
 		vnstat:     vn,
 		quotaSvc:   qs,
+		updater:    up,
+		hub:        hb,
 		log:        log,
 		loginGuard: NewLoginProtector(),
 		startedAt:  time.Now(),
@@ -98,6 +122,9 @@ func (s *Server) Handler() http.Handler {
 
 	// 兼容旧版 /api/* 端点
 	s.registerLegacyCompatRoutes(mux)
+
+	// 多机集群总览、被控上报与远程控制端点
+	s.registerClusterRoutes(mux)
 
 	// 现代公开与鉴权 /api/v1/* 端点
 	mux.HandleFunc("GET /api/v1/bootstrap", s.handleBootstrap)
@@ -190,7 +217,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	window := time.Duration(s.cfg.RateLimitWindowMs) * time.Millisecond
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api") {
+		if !strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/api/v1/cluster/agent/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -330,6 +357,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	authed, _ := s.isAuthenticated(r)
 	needsSetup := s.store.GetAdminPasswordHash() == ""
 	vnAvail, vnVer := s.engine.VnstatStatus(r.Context())
+	nodeRecords, _ := s.store.ListClusterNodes()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"appName":             flowmaster.AppName(),
@@ -342,6 +370,8 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		"vnstatAvailable":     vnAvail,
 		"vnstatVersion":       vnVer,
 		"realtimeIntervalMs":  s.cfg.RealtimeIntervalMs,
+		"remoteNodeCount":     len(nodeRecords),
+		"connectedToHub":      s.cfg.HubURL != "",
 	})
 }
 
@@ -506,6 +536,7 @@ func (s *Server) handleV1Realtime(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleV1RealtimeStream(w http.ResponseWriter, r *http.Request) {
 	iface := strings.TrimSpace(r.URL.Query().Get("interface"))
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node"))
 	if !collector.IsValidInterfaceName(iface) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效的接口名称"})
 		return
@@ -524,15 +555,29 @@ func (s *Server) handleV1RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// 连接建立立刻发送最近历史，让页面波形图秒开不空白
-	if hist, _, err := s.engine.GetRealtimeHistory(r.Context(), iface); err == nil {
-		initPayload, _ := json.Marshal(map[string]any{"type": "init", "history": hist})
-		fmt.Fprintf(w, "data: %s\n\n", initPayload)
-		flusher.Flush()
+	isRemote := nodeID != "" && nodeID != "local"
+	if isRemote {
+		if hist, _, err := s.hub.GetRemoteRealtimeHistory(nodeID, iface); err == nil {
+			initPayload, _ := json.Marshal(map[string]any{"type": "init", "history": hist})
+			fmt.Fprintf(w, "data: %s\n\n", initPayload)
+			flusher.Flush()
+		}
+	} else {
+		if hist, _, err := s.engine.GetRealtimeHistory(r.Context(), iface); err == nil {
+			initPayload, _ := json.Marshal(map[string]any{"type": "init", "history": hist})
+			fmt.Fprintf(w, "data: %s\n\n", initPayload)
+			flusher.Flush()
+		}
 	}
 
-	sub := s.engine.SubscribeRealtime()
-	defer s.engine.UnsubscribeRealtime(sub)
+	var sub chan map[string]model.RealtimeSample
+	if isRemote {
+		sub = s.hub.SubscribeRemoteRealtime(nodeID)
+		defer s.hub.UnsubscribeRemoteRealtime(nodeID, sub)
+	} else {
+		sub = s.engine.SubscribeRealtime()
+		defer s.engine.UnsubscribeRealtime(sub)
+	}
 
 	keepAlive := time.NewTicker(20 * time.Second)
 	defer keepAlive.Stop()
@@ -711,6 +756,7 @@ func (s *Server) handleAdminSaveSettings(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "默认网卡名称格式无效"})
 			return
 		}
+		sys.PublicHubURL = strings.TrimRight(strings.TrimSpace(sys.PublicHubURL), "/")
 		sys.Retention5mDays = clampInt(sys.Retention5mDays, 1, 90)
 		sys.RetentionHourlyDays = clampInt(sys.RetentionHourlyDays, 7, 1095)
 		sys.RetentionDailyDays = clampInt(sys.RetentionDailyDays, 30, 36525)

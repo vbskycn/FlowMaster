@@ -1,29 +1,56 @@
 <template>
   <div class="min-h-screen flex flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors">
-    <!-- 顶部品牌与控制栏 -->
+    <!-- 顶部品牌与全局模式切换栏 -->
     <header class="sticky top-0 z-30 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
-        <!-- 品牌区 + 系统版本号 -->
-        <div class="flex items-center gap-2.5 min-w-0">
-          <img src="/favicon.svg" alt="FlowMaster" class="w-8 h-8 rounded-xl shrink-0 shadow-xs" />
-          <div class="flex items-baseline gap-2 min-w-0">
-            <h1 class="text-base sm:text-lg font-bold tracking-tight truncate">{{ boot.siteTitle }}</h1>
-            <span
-              v-if="boot.version"
-              class="font-num text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/90 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/70 shrink-0"
-            >
-              v{{ boot.version }}
-            </span>
+        <!-- 品牌区 + 系统版本号 + 多机/单机视图切换 -->
+        <div class="flex flex-wrap items-center gap-3 min-w-0">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <img src="/favicon.svg" alt="FlowMaster" class="w-8 h-8 rounded-xl shrink-0 shadow-xs" />
+            <div class="flex items-baseline gap-2 min-w-0">
+              <h1 class="text-base sm:text-lg font-bold tracking-tight truncate">{{ boot.siteTitle }}</h1>
+              <span
+                v-if="boot.version"
+                class="font-num text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-950/90 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800/70 shrink-0"
+              >
+                v{{ boot.version }}
+              </span>
+            </div>
           </div>
-          <span class="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-            {{ sourceBadgeText }}
-          </span>
+
+          <!-- 顶栏一级视图切换：多机总览对比 <-> 单机监控详情 -->
+          <div
+            v-if="!boot.requireLoginForView || boot.authenticated"
+            class="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs"
+          >
+            <button
+              type="button"
+              class="px-3 py-1 rounded-lg font-medium transition-all cursor-pointer"
+              :class="viewMode === 'fleet'
+                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-2xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'"
+              @click="switchViewMode('fleet')"
+            >
+              🌐 多机总览 ({{ clusterState.nodes.length || 1 }})
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1 rounded-lg font-medium transition-all cursor-pointer"
+              :class="viewMode === 'single'
+                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-2xs'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'"
+              @click="switchViewMode('single')"
+            >
+              🖥️ 单机详情
+            </button>
+          </div>
         </div>
 
         <!-- 右侧实时状态与功能按钮 -->
         <div class="flex flex-wrap items-center gap-2">
-          <!-- 实时流状态指示 -->
+          <!-- 单机视图下的实时流状态指示 -->
           <button
+            v-if="viewMode === 'single'"
             type="button"
             class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 cursor-pointer"
             :title="livePaused ? '点击恢复实时推送' : '点击暂停实时推送'"
@@ -31,10 +58,10 @@
           >
             <span class="w-2 h-2 rounded-full"
               :class="livePaused ? 'bg-amber-400' : (streamConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400')"></span>
-            <span>{{ livePaused ? '已暂停' : (streamConnected ? '秒级实时' : '采样中') }}</span>
+            <span>{{ livePaused ? '已暂停' : (streamConnected ? '实时同步' : '采样中') }}</span>
           </button>
 
-          <!-- 速率单位切换 (Mbps / MB/s) -->
+          <!-- 速率单位切换 (Mbps / MiB/s) -->
           <button
             type="button"
             class="px-2.5 py-1.5 rounded-lg text-xs font-num border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
@@ -60,7 +87,7 @@
             class="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 hover:opacity-90 cursor-pointer"
             @click="openAdmin"
           >
-            {{ boot.authenticated ? '⚙️ 管理后台' : '🔒 管理登录' }}
+            {{ boot.authenticated ? '⚙️ 本机后台' : '🔒 管理登录' }}
           </button>
         </div>
       </div>
@@ -77,261 +104,315 @@
       />
     </main>
 
-    <!-- 主监控看板 -->
+    <!-- 主内容区 -->
     <main v-else class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 space-y-5">
-      <!-- 错误提示横幅 -->
       <div v-if="globalError" class="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300 flex items-center justify-between">
         <span>{{ globalError }}</span>
         <button type="button" class="underline ml-3 cursor-pointer" @click="initDashboard">重试</button>
       </div>
 
-      <!-- 网卡切换与链路元数据条 -->
-      <section class="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs font-medium text-slate-500 dark:text-slate-400 mr-1">监控网卡</span>
-          <button
-            v-for="nic in interfaces"
-            :key="nic.name"
-            type="button"
-            class="px-3 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5"
-            :class="selectedInterface === nic.name
-              ? 'bg-blue-600 text-white shadow-xs'
-              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-700'"
-            @click="selectInterface(nic.name)"
-          >
-            <span class="w-1.5 h-1.5 rounded-full" :class="nic.operState === 'up' ? 'bg-emerald-400' : 'bg-slate-400'"></span>
-            <span class="font-num">{{ nic.name }}</span>
-            <span v-if="nic.alias" class="opacity-85">({{ nic.alias }})</span>
-          </button>
-          <span v-if="!interfacesLoading && interfaces.length === 0" class="text-xs text-slate-400">
-            暂未检测到可见网卡，请在“管理后台 → 网卡管理”中检查
-          </span>
-        </div>
+      <!-- ==================== 模式 A：多机总览墙与横向对比中心 ==================== -->
+      <FleetOverview
+        v-if="viewMode === 'fleet'"
+        :nodes="clusterState.nodes"
+        :hub-version="clusterState.hubVersion || boot.version"
+        :latest-version="clusterState.latestReleaseVersion"
+        :public-hub-url="clusterState.publicHubUrl"
+        :authenticated="boot.authenticated"
+        :rate-mode="rateMode"
+        :dark="isDark"
+        @select-node="drillIntoNode"
+        @require-auth="showAuthModal = true"
+        @refresh="loadClusterFleet"
+      />
 
-        <div v-if="currentNicMeta" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 font-num">
-          <span v-if="currentNicMeta.ipv4?.length">IP: {{ currentNicMeta.ipv4[0] }}</span>
-          <span v-if="currentNicMeta.speedMbps > 0">{{ currentNicMeta.speedMbps }} Mbps</span>
-          <span v-if="currentNicMeta.mac" class="hidden sm:inline">MAC: {{ currentNicMeta.mac }}</span>
-        </div>
-      </section>
-
-      <!-- 核心指标 4 宫格卡片 -->
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <!-- 实时下行 -->
-        <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-          <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>实时下行速率 (RX)</span>
-            <span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300 font-num">↓ IN</span>
-          </div>
-          <div class="mt-2 text-2xl font-bold font-num text-blue-600 dark:text-blue-400">
-            {{ formatRate(latestRealtime.rxBytesPerSec, rateMode) }}
-          </div>
-          <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
-            <span>{{ Math.round(latestRealtime.rxPacketsPerSec || 0) }} pkt/s</span>
-            <span>近1分峰值 {{ formatRate(realtimePeakRx, rateMode) }}</span>
-          </div>
-        </div>
-
-        <!-- 实时上行 -->
-        <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-          <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>实时上行速率 (TX)</span>
-            <span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-300 font-num">↑ OUT</span>
-          </div>
-          <div class="mt-2 text-2xl font-bold font-num text-emerald-600 dark:text-emerald-400">
-            {{ formatRate(latestRealtime.txBytesPerSec, rateMode) }}
-          </div>
-          <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
-            <span>{{ Math.round(latestRealtime.txPacketsPerSec || 0) }} pkt/s</span>
-            <span>近1分峰值 {{ formatRate(realtimePeakTx, rateMode) }}</span>
-          </div>
-        </div>
-
-        <!-- 今日总流量 -->
-        <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-          <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>今日累计流量</span>
-            <span class="font-num">{{ todayPoint.label || '今日' }}</span>
-          </div>
-          <div class="mt-2 text-2xl font-bold font-num text-slate-900 dark:text-white">
-            {{ formatBytes(todayPoint.totalBytes) }}
-          </div>
-          <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-num">
-            <span>↓ {{ formatBytes(todayPoint.rxBytes) }}</span>
-            <span>↑ {{ formatBytes(todayPoint.txBytes) }}</span>
-          </div>
-        </div>
-
-        <!-- 本月流量 / 月度账单配额卡片 -->
-        <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-          <template v-if="quotaStatus.enabled && quotaStatus.limitBytes > 0">
-            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>月度流量包 ({{ quotaDirectionLabel }})</span>
-              <span class="font-num text-[11px]">{{ quotaStatus.cycleStart.slice(5) }}~{{ quotaStatus.cycleEnd.slice(5) }}</span>
-            </div>
-            <div class="mt-1.5 flex items-baseline justify-between">
-              <span class="text-xl font-bold font-num" :class="quotaColorClass">
-                {{ formatBytes(quotaStatus.usedBytes) }}
-              </span>
-              <span class="text-xs font-num text-slate-500">
-                / {{ formatBytes(quotaStatus.limitBytes) }} ({{ quotaStatus.usagePercent.toFixed(1) }}%)
-              </span>
-            </div>
-            <div class="mt-2 w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-              <div
-                class="h-full rounded-full transition-all duration-300"
-                :class="quotaStatus.overLimit ? 'bg-red-500' : (quotaStatus.overWarn ? 'bg-amber-500' : 'bg-blue-600')"
-                :style="{ width: Math.min(100, quotaStatus.usagePercent) + '%' }"
-              ></div>
-            </div>
-            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
-              <span>剩余 {{ formatBytes(quotaStatus.remainingBytes) }}</span>
-              <span>预计周期末 {{ formatBytes(quotaStatus.projectedBytes) }}</span>
-            </div>
-          </template>
-          <template v-else>
-            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>本月累计流量</span>
-              <button type="button" class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer" @click="openAdmin">
-                设置流量包配额
-              </button>
-            </div>
-            <div class="mt-2 text-2xl font-bold font-num text-slate-900 dark:text-white">
-              {{ formatBytes(thisMonthPoint.totalBytes) }}
-            </div>
-            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-num">
-              <span>↓ {{ formatBytes(thisMonthPoint.rxBytes) }}</span>
-              <span>↑ {{ formatBytes(thisMonthPoint.txBytes) }}</span>
-            </div>
-          </template>
-        </div>
-      </section>
-
-      <!-- 秒级实时速率波形图 -->
-      <section class="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
-        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div>
-            <h2 class="text-sm sm:text-base font-bold text-slate-900 dark:text-white">实时吞吐波形</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400">最近 60 次秒级内核采样动态曲线（页面切至后台标签时自动休眠省电）</p>
-          </div>
-          <span v-if="lastSampleTimeText" class="text-xs font-num text-slate-400">
-            最新样本：{{ lastSampleTimeText }}
-          </span>
-        </div>
-        <TrafficChart
-          type="line"
-          :labels="realtimeChartData.labels"
-          :rx-data="realtimeChartData.rx"
-          :tx-data="realtimeChartData.tx"
-          rx-label="实时下行"
-          tx-label="实时上行"
-          :unit="realtimeChartData.unit"
-          :dark="isDark"
-          :height="240"
-          :animate="false"
-        />
-      </section>
-
-      <!-- 多周期历史统计分析与增强分页表 -->
-      <section class="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs space-y-4">
-        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <!-- 周期分段切换 -->
-          <div class="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800">
+      <!-- ==================== 模式 B：单机全景监控详情（支持本机与任意远程机器无缝下钻） ==================== -->
+      <template v-else>
+        <!-- 多机环境下的节点快捷切换与返回总览导航条 -->
+        <section
+          v-if="clusterState.nodes.length > 1 || activeNodeId !== 'local'"
+          class="p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/70 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div class="flex flex-wrap items-center gap-2.5 text-xs">
             <button
-              v-for="p in periodTabs"
-              :key="p.key"
               type="button"
-              class="px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer"
-              :class="activePeriod === p.key
-                ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-2xs'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'"
-              @click="switchPeriod(p.key)"
+              class="px-3 py-1.5 rounded-xl font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              @click="switchViewMode('fleet')"
             >
-              {{ p.label }}
+              ← 返回多机总览
             </button>
+            <span class="text-slate-500 dark:text-slate-400">当前查看服务器：</span>
+            <select
+              :value="activeNodeId"
+              class="px-3 py-1.5 rounded-xl font-semibold bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+              @change="drillIntoNode($event.target.value)"
+            >
+              <option v-for="n in clusterState.nodes" :key="n.id" :value="n.id">
+                {{ n.online ? '🟢' : '🔴' }} {{ n.name }} {{ n.version ? `(v${n.version})` : '' }}
+              </option>
+            </select>
           </div>
 
-          <div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-            <span v-if="statsResult.source" class="px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 font-num">
-              引擎: {{ statsResult.source }}
+          <div v-if="activeNodeSummary && !activeNodeSummary.isLocal" class="flex items-center gap-2 text-xs">
+            <span class="font-num text-slate-500">
+              {{ activeNodeSummary.os }}/{{ activeNodeSummary.arch }}
             </span>
             <button
               type="button"
-              class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-              :disabled="statsLoading"
-              @click="refreshActiveStats"
+              class="px-3 py-1.5 rounded-xl font-medium bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 cursor-pointer"
+              @click="openActiveRemoteConfig"
             >
-              {{ statsLoading ? '加载中…' : '刷新统计' }}
+              ⚙️ 远程配置该机器
             </button>
           </div>
-        </div>
+        </section>
 
-        <!-- 自定义日期区间选择栏 -->
-        <div v-if="activePeriod === 'range'" class="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800 flex flex-wrap items-end gap-3">
-          <div>
-            <label class="block text-[11px] text-slate-500 mb-1">开始日期</label>
-            <input v-model="rangeForm.start" type="date" class="px-2.5 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+        <!-- 网卡切换与 IPv4/IPv6 链路元数据条 -->
+        <section class="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-medium text-slate-500 dark:text-slate-400 mr-1">监控网卡</span>
+            <button
+              v-for="nic in interfaces"
+              :key="nic.name"
+              type="button"
+              class="px-3 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5"
+              :class="selectedInterface === nic.name
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-700'"
+              @click="selectInterface(nic.name)"
+            >
+              <span class="w-1.5 h-1.5 rounded-full" :class="nic.operState === 'up' ? 'bg-emerald-400' : 'bg-slate-400'"></span>
+              <span class="font-num">{{ nic.name }}</span>
+              <span v-if="nic.alias" class="opacity-85">({{ nic.alias }})</span>
+            </button>
+            <span v-if="!interfacesLoading && interfaces.length === 0" class="text-xs text-slate-400">
+              暂未检测到可见网卡
+            </span>
           </div>
-          <div>
-            <label class="block text-[11px] text-slate-500 mb-1">结束日期</label>
-            <input v-model="rangeForm.end" type="date" class="px-2.5 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
-          </div>
-          <button
-            type="button"
-            class="px-4 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
-            @click="loadRangeStats"
-          >
-            查询区间
-          </button>
-          <div class="flex items-center gap-1.5 text-xs ml-auto">
-            <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyQuickRange(7)">近 7 天</button>
-            <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyQuickRange(30)">近 30 天</button>
-            <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyThisMonthRange">本月</button>
-          </div>
-        </div>
 
-        <!-- 区间汇总条 -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-950/50 border border-slate-200/60 dark:border-slate-800/80 text-xs">
-          <div>
-            <span class="text-slate-500 dark:text-slate-400">区间总流量</span>
-            <div class="mt-0.5 text-sm font-bold font-num text-slate-900 dark:text-white">{{ formatBytes(statsResult.summary.totalBytes) }}</div>
+          <div v-if="currentNicMeta" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 font-num">
+            <span v-if="currentNicMeta.ipv4?.length">IPv4: {{ currentNicMeta.ipv4[0] }}</span>
+            <span v-if="currentNicMeta.ipv6?.length" class="truncate max-w-60" :title="currentNicMeta.ipv6.join(', ')">
+              IPv6: {{ currentNicMeta.ipv6[0] }}
+            </span>
+            <span v-if="currentNicMeta.speedMbps > 0">{{ currentNicMeta.speedMbps }} Mbps</span>
+            <span v-if="currentNicMeta.mac" class="hidden sm:inline">MAC: {{ currentNicMeta.mac }}</span>
           </div>
-          <div>
-            <span class="text-slate-500 dark:text-slate-400">总下行 / 总上行</span>
-            <div class="mt-0.5 text-sm font-semibold font-num">
-              <span class="text-blue-600 dark:text-blue-400">{{ formatBytes(statsResult.summary.totalRxBytes) }}</span>
-              <span class="mx-1 text-slate-400">/</span>
-              <span class="text-emerald-600 dark:text-emerald-400">{{ formatBytes(statsResult.summary.totalTxBytes) }}</span>
+        </section>
+
+        <!-- 核心指标 4 宫格卡片 -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>实时下行速率 (RX)</span>
+              <span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300 font-num">↓ IN</span>
+            </div>
+            <div class="mt-2 text-2xl font-bold font-num text-blue-600 dark:text-blue-400">
+              {{ formatRate(latestRealtime.rxBytesPerSec, rateMode) }}
+            </div>
+            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
+              <span>{{ Math.round(latestRealtime.rxPacketsPerSec || 0) }} pkt/s</span>
+              <span>近期峰值 {{ formatRate(realtimePeakRx, rateMode) }}</span>
             </div>
           </div>
-          <div>
-            <span class="text-slate-500 dark:text-slate-400">最高流量时段</span>
-            <div class="mt-0.5 text-sm font-semibold font-num text-slate-800 dark:text-slate-200">{{ statsResult.summary.peakLabel || '—' }}</div>
-          </div>
-          <div>
-            <span class="text-slate-500 dark:text-slate-400">区间平均速率</span>
-            <div class="mt-0.5 text-sm font-semibold font-num text-slate-800 dark:text-slate-200">{{ formatBps(statsResult.summary.avgBps) }}</div>
-          </div>
-        </div>
 
-        <!-- 历史统计图表 -->
-        <TrafficChart
-          v-if="statsResult.points.length > 0"
-          :type="activePeriod === 'm' || activePeriod === 'y' ? 'bar' : 'line'"
-          :labels="periodChartData.labels"
-          :rx-data="periodChartData.rx"
-          :tx-data="periodChartData.tx"
-          :unit="periodChartData.unit"
-          :dark="isDark"
-          :height="280"
-        />
-        <div v-else-if="!statsLoading" class="py-12 text-center text-sm text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
-          当前周期暂未产生流量样本，等待下一个采样窗口自动汇入…
-        </div>
+          <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>实时上行速率 (TX)</span>
+              <span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-300 font-num">↑ OUT</span>
+            </div>
+            <div class="mt-2 text-2xl font-bold font-num text-emerald-600 dark:text-emerald-400">
+              {{ formatRate(latestRealtime.txBytesPerSec, rateMode) }}
+            </div>
+            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
+              <span>{{ Math.round(latestRealtime.txPacketsPerSec || 0) }} pkt/s</span>
+              <span>近期峰值 {{ formatRate(realtimePeakTx, rateMode) }}</span>
+            </div>
+          </div>
 
-        <!-- 标准增强分页与搜索排序数据表 -->
-        <DataTable :rows="statsResult.points" />
-      </section>
+          <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>今日累计流量</span>
+              <span class="font-num">{{ todayPoint.label || '今日' }}</span>
+            </div>
+            <div class="mt-2 text-2xl font-bold font-num text-slate-900 dark:text-white">
+              {{ formatBytes(todayPoint.totalBytes) }}
+            </div>
+            <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-num">
+              <span>↓ {{ formatBytes(todayPoint.rxBytes) }}</span>
+              <span>↑ {{ formatBytes(todayPoint.txBytes) }}</span>
+            </div>
+          </div>
+
+          <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <template v-if="quotaStatus.enabled && quotaStatus.limitBytes > 0">
+              <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>月度流量包 ({{ quotaDirectionLabel }})</span>
+                <span class="font-num text-[11px]">{{ quotaStatus.cycleStart?.slice(5) }}~{{ quotaStatus.cycleEnd?.slice(5) }}</span>
+              </div>
+              <div class="mt-1.5 flex items-baseline justify-between">
+                <span class="text-xl font-bold font-num" :class="quotaColorClass">
+                  {{ formatBytes(quotaStatus.usedBytes) }}
+                </span>
+                <span class="text-xs font-num text-slate-500">
+                  / {{ formatBytes(quotaStatus.limitBytes) }} ({{ (quotaStatus.usagePercent || 0).toFixed(1) }}%)
+                </span>
+              </div>
+              <div class="mt-2 w-full h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                <div
+                  class="h-full rounded-full transition-all duration-300"
+                  :class="quotaStatus.overLimit ? 'bg-red-500' : (quotaStatus.overWarn ? 'bg-amber-500' : 'bg-blue-600')"
+                  :style="{ width: Math.min(100, quotaStatus.usagePercent || 0) + '%' }"
+                ></div>
+              </div>
+              <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-400 font-num">
+                <span>剩余 {{ formatBytes(quotaStatus.remainingBytes) }}</span>
+                <span>预计周期末 {{ formatBytes(quotaStatus.projectedBytes) }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                <span>本月累计流量</span>
+                <button
+                  type="button"
+                  class="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  @click="activeNodeId === 'local' ? openAdmin() : openActiveRemoteConfig()"
+                >
+                  设置流量包配额
+                </button>
+              </div>
+              <div class="mt-2 text-2xl font-bold font-num text-slate-900 dark:text-white">
+                {{ formatBytes(thisMonthPoint.totalBytes) }}
+              </div>
+              <div class="mt-1.5 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-num">
+                <span>↓ {{ formatBytes(thisMonthPoint.rxBytes) }}</span>
+                <span>↑ {{ formatBytes(thisMonthPoint.txBytes) }}</span>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- 实时吞吐波形图 -->
+        <section class="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div>
+              <h2 class="text-sm sm:text-base font-bold text-slate-900 dark:text-white">实时吞吐波形</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400">最近 60 次动态采样曲线（页面切至后台标签时自动休眠省电）</p>
+            </div>
+            <span v-if="lastSampleTimeText" class="text-xs font-num text-slate-400">
+              最新样本：{{ lastSampleTimeText }}
+            </span>
+          </div>
+          <TrafficChart
+            type="line"
+            :labels="realtimeChartData.labels"
+            :rx-data="realtimeChartData.rx"
+            :tx-data="realtimeChartData.tx"
+            rx-label="实时下行"
+            tx-label="实时上行"
+            :unit="realtimeChartData.unit"
+            :dark="isDark"
+            :height="240"
+            :animate="false"
+          />
+        </section>
+
+        <!-- 多周期历史统计分析与增强分页表 -->
+        <section class="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs space-y-4">
+          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div class="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800">
+              <button
+                v-for="p in periodTabs"
+                :key="p.key"
+                type="button"
+                class="px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer"
+                :class="activePeriod === p.key
+                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-2xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'"
+                @click="switchPeriod(p.key)"
+              >
+                {{ p.label }}
+              </button>
+            </div>
+
+            <div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <span v-if="statsResult.source" class="px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 font-num">
+                引擎: {{ statsResult.source }}
+              </span>
+              <button
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                :disabled="statsLoading"
+                @click="refreshActiveStats"
+              >
+                {{ statsLoading ? '加载中…' : '刷新统计' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="activePeriod === 'range'" class="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-slate-200/70 dark:border-slate-800 flex flex-wrap items-end gap-3">
+            <div>
+              <label class="block text-[11px] text-slate-500 mb-1">开始日期</label>
+              <input v-model="rangeForm.start" type="date" class="px-2.5 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-500 mb-1">结束日期</label>
+              <input v-model="rangeForm.end" type="date" class="px-2.5 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900" />
+            </div>
+            <button
+              type="button"
+              class="px-4 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
+              @click="loadRangeStats"
+            >
+              查询区间
+            </button>
+            <div class="flex items-center gap-1.5 text-xs ml-auto">
+              <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyQuickRange(7)">近 7 天</button>
+              <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyQuickRange(30)">近 30 天</button>
+              <button type="button" class="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="applyThisMonthRange">本月</button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-950/50 border border-slate-200/60 dark:border-slate-800/80 text-xs">
+            <div>
+              <span class="text-slate-500 dark:text-slate-400">区间总流量</span>
+              <div class="mt-0.5 text-sm font-bold font-num text-slate-900 dark:text-white">{{ formatBytes(statsResult.summary.totalBytes) }}</div>
+            </div>
+            <div>
+              <span class="text-slate-500 dark:text-slate-400">总下行 / 总上行</span>
+              <div class="mt-0.5 text-sm font-semibold font-num">
+                <span class="text-blue-600 dark:text-blue-400">{{ formatBytes(statsResult.summary.totalRxBytes) }}</span>
+                <span class="mx-1 text-slate-400">/</span>
+                <span class="text-emerald-600 dark:text-emerald-400">{{ formatBytes(statsResult.summary.totalTxBytes) }}</span>
+              </div>
+            </div>
+            <div>
+              <span class="text-slate-500 dark:text-slate-400">最高流量时段</span>
+              <div class="mt-0.5 text-sm font-semibold font-num text-slate-800 dark:text-slate-200">{{ statsResult.summary.peakLabel || '—' }}</div>
+            </div>
+            <div>
+              <span class="text-slate-500 dark:text-slate-400">区间平均速率</span>
+              <div class="mt-0.5 text-sm font-semibold font-num text-slate-800 dark:text-slate-200">{{ formatBps(statsResult.summary.avgBps) }}</div>
+            </div>
+          </div>
+
+          <TrafficChart
+            v-if="statsResult.points.length > 0"
+            :type="activePeriod === 'm' || activePeriod === 'y' ? 'bar' : 'line'"
+            :labels="periodChartData.labels"
+            :rx-data="periodChartData.rx"
+            :tx-data="periodChartData.tx"
+            :unit="periodChartData.unit"
+            :dark="isDark"
+            :height="280"
+          />
+          <div v-else-if="!statsLoading" class="py-12 text-center text-sm text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+            当前周期暂未产生流量样本，等待下一个采样窗口自动汇入…
+          </div>
+
+          <DataTable :rows="statsResult.points" />
+        </section>
+      </template>
     </main>
 
     <!-- 页脚品牌与版本 -->
@@ -340,7 +421,7 @@
         <div class="flex items-center gap-2">
           <span class="font-semibold text-slate-700 dark:text-slate-300">FlowMaster</span>
           <span v-if="boot.version" class="font-num text-[11px] px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800">v{{ boot.version }}</span>
-          <span>轻量级主机网络流量监控系统</span>
+          <span>轻量级多主机网络流量统一监控与管理系统</span>
         </div>
         <a href="https://github.com/vbskycn/FlowMaster" target="_blank" rel="noopener noreferrer" class="hover:text-blue-600 dark:hover:text-blue-400">
           GitHub
@@ -348,7 +429,6 @@
       </div>
     </footer>
 
-    <!-- 登录弹窗（非全站门禁时点击“管理后台”按需拉起） -->
     <AuthModal
       v-if="showAuthModal"
       :needs-setup="boot.needsSetup"
@@ -359,13 +439,21 @@
       @success="onAuthModalSuccess"
     />
 
-    <!-- 管理后台抽屉/模态中心 -->
     <AdminConsole
       v-if="showAdminConsole"
       :version="boot.version"
       @close="showAdminConsole = false"
       @updated="onAdminUpdated"
       @logged-out="onAdminLoggedOut"
+    />
+
+    <RemoteNodeConfigModal
+      v-if="editingRemoteNode"
+      :node="editingRemoteNode"
+      :latest-version="clusterState.latestReleaseVersion || boot.version"
+      @close="editingRemoteNode = null"
+      @updated="onRemoteConfigUpdated"
+      @deleted="onRemoteNodeDeleted"
     />
   </div>
 </template>
@@ -376,6 +464,8 @@ import TrafficChart from './components/TrafficChart.vue';
 import DataTable from './components/DataTable.vue';
 import AuthModal from './components/AuthModal.vue';
 import AdminConsole from './components/AdminConsole.vue';
+import FleetOverview from './components/FleetOverview.vue';
+import RemoteNodeConfigModal from './components/RemoteNodeConfigModal.vue';
 import { formatBytes, formatRate, formatBps, apiRequest } from './utils/format';
 
 const periodTabs = [
@@ -397,7 +487,20 @@ const boot = reactive({
   authenticated: false,
   needsSetup: false,
   vnstatAvailable: false,
-  vnstatVersion: ''
+  vnstatVersion: '',
+  remoteNodeCount: 0,
+  connectedToHub: false
+});
+
+const viewMode = ref('single');
+const hasChosenInitialView = ref(false);
+const activeNodeId = ref('local');
+
+const clusterState = reactive({
+  hubVersion: '',
+  latestReleaseVersion: '',
+  publicHubUrl: '',
+  nodes: []
 });
 
 const isDark = ref(false);
@@ -450,38 +553,28 @@ const statsResult = reactive({
   }
 });
 
-const rangeForm = reactive({
-  start: '',
-  end: ''
-});
+const rangeForm = reactive({ start: '', end: '' });
 
 const showAuthModal = ref(false);
 const showAdminConsole = ref(false);
+const editingRemoteNode = ref(null);
 
 let sseSource = null;
+let fleetPollTimer = null;
 let summaryRefreshTimer = null;
 
-const sourceBadgeText = computed(() => {
-  if (boot.dataSourceMode === 'sqlite') return 'SQLite 自采引擎';
-  if (boot.dataSourceMode === 'vnstat') return 'vnstat 直读引擎';
-  return boot.vnstatAvailable ? 'Hybrid 智能融合引擎' : '内核直采 + SQLite';
-});
-
+const activeNodeSummary = computed(() => clusterState.nodes.find(n => n.id === activeNodeId.value) || null);
 const currentNicMeta = computed(() => interfaces.value.find(i => i.name === selectedInterface.value) || null);
 
 const realtimePeakRx = computed(() => {
   let m = 0;
-  for (const s of realtimeSamples.value) {
-    if (s.rxBytesPerSec > m) m = s.rxBytesPerSec;
-  }
+  for (const s of realtimeSamples.value) if (s.rxBytesPerSec > m) m = s.rxBytesPerSec;
   return m;
 });
 
 const realtimePeakTx = computed(() => {
   let m = 0;
-  for (const s of realtimeSamples.value) {
-    if (s.txBytesPerSec > m) m = s.txBytesPerSec;
-  }
+  for (const s of realtimeSamples.value) if (s.txBytesPerSec > m) m = s.txBytesPerSec;
   return m;
 });
 
@@ -543,6 +636,13 @@ const periodChartData = computed(() => {
   };
 });
 
+function nodeApiBase() {
+  if (!activeNodeId.value || activeNodeId.value === 'local') {
+    return '/api/v1';
+  }
+  return `/api/v1/cluster/nodes/${encodeURIComponent(activeNodeId.value)}`;
+}
+
 function initPreferences() {
   try {
     const savedTheme = localStorage.getItem('fm_theme');
@@ -553,9 +653,7 @@ function initPreferences() {
     if (savedRate === 'bytes' || savedRate === 'bits') {
       rateMode.value = savedRate;
     }
-  } catch (_) {
-    // 忽略存储限制
-  }
+  } catch (_) {}
   document.documentElement.classList.toggle('dark', isDark.value);
 }
 
@@ -593,6 +691,23 @@ async function loadBootstrap() {
   const data = await apiRequest('/api/v1/bootstrap');
   Object.assign(boot, data, { loaded: true });
   document.title = boot.siteTitle || 'FlowMaster 流量监控';
+  if (!hasChosenInitialView.value) {
+    hasChosenInitialView.value = true;
+    // 当主控已接入多台子节点时，打开首页默认直接展示“多机总览与对比墙”
+    if ((boot.remoteNodeCount || 0) > 0) {
+      viewMode.value = 'fleet';
+    }
+  }
+}
+
+async function loadClusterFleet() {
+  try {
+    const data = await apiRequest('/api/v1/cluster/nodes');
+    clusterState.hubVersion = data.hubVersion || '';
+    clusterState.latestReleaseVersion = data.latestReleaseVersion || '';
+    clusterState.publicHubUrl = data.publicHubUrl || '';
+    clusterState.nodes = data.nodes || [];
+  } catch (_) {}
 }
 
 async function initDashboard() {
@@ -603,8 +718,41 @@ async function initDashboard() {
       closeRealtimeStream();
       return;
     }
-    interfacesLoading.value = true;
-    const ifData = await apiRequest('/api/v1/interfaces');
+    await loadClusterFleet();
+    if (viewMode.value === 'single') {
+      await loadSingleNodeDashboard();
+    } else {
+      closeRealtimeStream();
+    }
+  } catch (err) {
+    globalError.value = err.message || '加载监控面板失败';
+  }
+}
+
+async function switchViewMode(mode) {
+  viewMode.value = mode;
+  if (mode === 'fleet') {
+    closeRealtimeStream();
+    await loadClusterFleet();
+  } else {
+    await loadSingleNodeDashboard();
+  }
+}
+
+async function drillIntoNode(nodeId) {
+  activeNodeId.value = nodeId || 'local';
+  viewMode.value = 'single';
+  selectedInterface.value = '';
+  realtimeSamples.value = [];
+  Object.assign(latestRealtime, { rxBytesPerSec: 0, txBytesPerSec: 0, rxPacketsPerSec: 0, txPacketsPerSec: 0, timestamp: 0 });
+  await loadSingleNodeDashboard();
+}
+
+async function loadSingleNodeDashboard() {
+  interfacesLoading.value = true;
+  globalError.value = '';
+  try {
+    const ifData = await apiRequest(`${nodeApiBase()}/interfaces`);
     interfaces.value = ifData.interfaces || [];
     interfacesLoading.value = false;
 
@@ -620,7 +768,7 @@ async function initDashboard() {
     }
   } catch (err) {
     interfacesLoading.value = false;
-    globalError.value = err.message || '加载监控面板失败';
+    globalError.value = err.message;
   }
 }
 
@@ -652,10 +800,13 @@ function closeRealtimeStream() {
 
 function connectRealtimeStream() {
   closeRealtimeStream();
-  if (livePaused.value || document.hidden || !selectedInterface.value) return;
+  if (viewMode.value !== 'single' || livePaused.value || document.hidden || !selectedInterface.value) return;
 
-  const url = `/api/v1/stream/realtime?interface=${encodeURIComponent(selectedInterface.value)}`;
-  const es = new EventSource(url);
+  const params = new URLSearchParams({
+    interface: selectedInterface.value,
+    node: activeNodeId.value || 'local'
+  });
+  const es = new EventSource(`/api/v1/stream/realtime?${params.toString()}`);
   sseSource = es;
 
   es.onopen = () => {
@@ -683,19 +834,17 @@ function connectRealtimeStream() {
 
 function toggleLivePause() {
   livePaused.value = !livePaused.value;
-  if (livePaused.value) {
-    closeRealtimeStream();
-  } else {
-    connectRealtimeStream();
-  }
+  if (livePaused.value) closeRealtimeStream();
+  else connectRealtimeStream();
 }
 
 async function loadTodayAndMonthCards() {
   if (!selectedInterface.value) return;
   const iface = encodeURIComponent(selectedInterface.value);
+  const base = nodeApiBase();
   const [dayRes, monthRes] = await Promise.allSettled([
-    apiRequest(`/api/v1/stats/${iface}/d?limit=2`),
-    apiRequest(`/api/v1/stats/${iface}/m?limit=2`)
+    apiRequest(`${base}/stats/${iface}/d?limit=2`),
+    apiRequest(`${base}/stats/${iface}/m?limit=2`)
   ]);
 
   const todayStr = formatLocalDate(new Date());
@@ -714,7 +863,10 @@ async function loadTodayAndMonthCards() {
 
 async function loadQuotaCard() {
   try {
-    const data = await apiRequest('/api/v1/quota/status');
+    const endpoint = activeNodeId.value === 'local'
+      ? '/api/v1/quota/status'
+      : `/api/v1/cluster/nodes/${encodeURIComponent(activeNodeId.value)}/quota`;
+    const data = await apiRequest(endpoint);
     Object.assign(quotaStatus, data);
   } catch (_) {}
 }
@@ -735,7 +887,7 @@ async function refreshActiveStats() {
   statsLoading.value = true;
   try {
     const iface = encodeURIComponent(selectedInterface.value);
-    const data = await apiRequest(`/api/v1/stats/${iface}/${activePeriod.value}`);
+    const data = await apiRequest(`${nodeApiBase()}/stats/${iface}/${activePeriod.value}`);
     statsResult.source = data.source || '';
     statsResult.points = data.points || [];
     Object.assign(statsResult.summary, data.summary || {});
@@ -751,7 +903,7 @@ async function loadRangeStats() {
   statsLoading.value = true;
   try {
     const iface = encodeURIComponent(selectedInterface.value);
-    const data = await apiRequest(`/api/v1/stats/${iface}/range/${rangeForm.start}/${rangeForm.end}`);
+    const data = await apiRequest(`${nodeApiBase()}/stats/${iface}/range/${rangeForm.start}/${rangeForm.end}`);
     statsResult.source = data.source || '';
     statsResult.points = data.points || [];
     Object.assign(statsResult.summary, data.summary || {});
@@ -787,14 +939,38 @@ function openAdmin() {
   }
 }
 
+function openActiveRemoteConfig() {
+  if (!boot.authenticated) {
+    showAuthModal.value = true;
+    return;
+  }
+  if (activeNodeSummary.value && !activeNodeSummary.value.isLocal) {
+    editingRemoteNode.value = activeNodeSummary.value;
+  }
+}
+
+async function onRemoteConfigUpdated() {
+  await loadClusterFleet();
+  if (viewMode.value === 'single') {
+    await loadSingleNodeDashboard();
+  }
+}
+
+async function onRemoteNodeDeleted() {
+  editingRemoteNode.value = null;
+  activeNodeId.value = 'local';
+  viewMode.value = 'fleet';
+  await loadClusterFleet();
+}
+
 async function onAuthSuccess() {
   await initDashboard();
 }
 
 async function onAuthModalSuccess() {
   showAuthModal.value = false;
-  await initDashboard();
-  showAdminConsole.value = true;
+  await loadBootstrap();
+  await loadClusterFleet();
 }
 
 async function onAdminUpdated() {
@@ -809,10 +985,13 @@ async function onAdminLoggedOut() {
 function handleVisibilityChange() {
   if (document.hidden) {
     closeRealtimeStream();
-  } else if (!livePaused.value && selectedInterface.value && (!boot.requireLoginForView || boot.authenticated)) {
-    connectRealtimeStream();
-    loadTodayAndMonthCards();
-    loadQuotaCard();
+  } else if (!boot.requireLoginForView || boot.authenticated) {
+    loadClusterFleet();
+    if (viewMode.value === 'single' && !livePaused.value && selectedInterface.value) {
+      connectRealtimeStream();
+      loadTodayAndMonthCards();
+      loadQuotaCard();
+    }
   }
 }
 
@@ -822,8 +1001,17 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibilityChange);
   await initDashboard();
 
+  // 多机视图每 3 秒自动刷新各节点在线状态与实时带宽汇总
+  fleetPollTimer = window.setInterval(() => {
+    if (!document.hidden && (!boot.requireLoginForView || boot.authenticated)) {
+      if (viewMode.value === 'fleet' || clusterState.nodes.length > 1) {
+        loadClusterFleet();
+      }
+    }
+  }, 3000);
+
   summaryRefreshTimer = window.setInterval(() => {
-    if (!document.hidden && selectedInterface.value && (!boot.requireLoginForView || boot.authenticated)) {
+    if (!document.hidden && viewMode.value === 'single' && selectedInterface.value && (!boot.requireLoginForView || boot.authenticated)) {
       loadTodayAndMonthCards();
       loadQuotaCard();
       if (activePeriod.value === '5') {
@@ -835,6 +1023,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   closeRealtimeStream();
+  if (fleetPollTimer) window.clearInterval(fleetPollTimer);
   if (summaryRefreshTimer) window.clearInterval(summaryRefreshTimer);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
 });

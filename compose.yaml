@@ -1,14 +1,14 @@
 services:
   flowmaster:
-    # 官方多架构镜像 (linux/amd64, linux/arm64)；也可替换为 ghcr.io/vbskycn/flowmaster:2.0.0
-    image: zhoujie218/flowmaster:2.0.0
+    # 官方多架构镜像 (linux/amd64, linux/arm64)；也可替换为 ghcr.io/vbskycn/flowmaster:2.1.0
+    image: zhoujie218/flowmaster:2.1.0
     container_name: flowmaster
     restart: unless-stopped
     # 使用 host 网络模式以便零开销读取宿主机真实物理网卡 (/proc/net/dev)
     network_mode: host
     environment:
       TZ: Asia/Shanghai
-      HOST: 0.0.0.0
+      HOST: "::"
       PORT: 10089
       DATA_DIR: /data
       # 若挂载了宿主机 /var/lib/vnstat，可在此指定目录以启用 Hybrid 融合或一键导入

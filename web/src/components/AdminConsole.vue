@@ -198,7 +198,9 @@
                     </span>
                   </td>
                   <td class="py-2.5 px-3 font-num text-slate-500 dark:text-slate-400">
-                    <div>{{ (nic.ipv4 && nic.ipv4.length) ? nic.ipv4.join(', ') : '—' }}</div>
+                    <div v-if="nic.ipv4 && nic.ipv4.length">{{ nic.ipv4.join(', ') }}</div>
+                    <div v-if="nic.ipv6 && nic.ipv6.length" class="text-[11px] text-slate-400 truncate max-w-48" :title="nic.ipv6.join(', ')">{{ nic.ipv6[0] }}</div>
+                    <div v-if="(!nic.ipv4 || !nic.ipv4.length) && (!nic.ipv6 || !nic.ipv6.length)">—</div>
                     <div v-if="nic.speedMbps > 0" class="text-[11px] text-slate-400">{{ nic.speedMbps }} Mbps</div>
                   </td>
                   <td class="py-2.5 px-3">
@@ -564,6 +566,11 @@
                 <input v-model.trim="systemForm.siteTitle" type="text" maxlength="48" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
               </div>
 
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">主控公网接入地址（多机管理生成一键接入命令使用，留空自动识别当前访问域名/IP）</label>
+                <input v-model.trim="systemForm.publicHubUrl" type="url" placeholder="https://monitor.example.com 或 http://[IPv6]:10089" class="w-full px-3 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+              </div>
+
               <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
                 <input v-model="systemForm.requireLoginForView" type="checkbox" class="accent-blue-600 w-4 h-4" />
                 <span>开启全站密码保护（未登录访客禁止查看前台流量看板）</span>
@@ -749,6 +756,7 @@ const systemForm = reactive({
   dataSourceMode: 'hybrid',
   hideVirtualInterfaces: true,
   defaultInterface: '',
+  publicHubUrl: '',
   retention5mDays: 7,
   retentionHourlyDays: 90,
   retentionDailyDays: 3660,

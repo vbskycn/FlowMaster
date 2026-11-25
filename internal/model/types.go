@@ -15,7 +15,7 @@ const (
 	QuotaDirMax  = "max"  // 单向取较大值 max(RX, TX)
 )
 
-// InterfaceInfo 表示单个网络接口的元数据与实时状态。
+// InterfaceInfo 表示单个网络接口的元数据与实时状态（原生支持 IPv4 与全局 IPv6）。
 type InterfaceInfo struct {
 	Name          string   `json:"name"`
 	Alias         string   `json:"alias"`
@@ -25,6 +25,7 @@ type InterfaceInfo struct {
 	SpeedMbps     int      `json:"speedMbps"`
 	MAC           string   `json:"mac"`
 	IPv4          []string `json:"ipv4"`
+	IPv6          []string `json:"ipv6"`
 	RxBytesKernel uint64   `json:"rxBytesKernel"`
 	TxBytesKernel uint64   `json:"txBytesKernel"`
 	HasSQLiteData bool     `json:"hasSqliteData"`
@@ -92,6 +93,7 @@ type SystemSettings struct {
 	DataSourceMode        string `json:"dataSourceMode"`
 	HideVirtualInterfaces bool   `json:"hideVirtualInterfaces"`
 	DefaultInterface      string `json:"defaultInterface"`
+	PublicHubURL          string `json:"publicHubUrl"`
 	Retention5mDays       int    `json:"retention5mDays"`
 	RetentionHourlyDays   int    `json:"retentionHourlyDays"`
 	RetentionDailyDays    int    `json:"retentionDailyDays"`
@@ -107,6 +109,7 @@ func DefaultSystemSettings() SystemSettings {
 		DataSourceMode:        SourceModeHybrid,
 		HideVirtualInterfaces: true,
 		DefaultInterface:      "",
+		PublicHubURL:          "",
 		Retention5mDays:       7,
 		RetentionHourlyDays:   90,
 		RetentionDailyDays:    3660,
@@ -132,7 +135,7 @@ func DefaultQuotaConfig() QuotaConfig {
 		Interface:         "",
 		ResetDay:          1,
 		Direction:         QuotaDirBoth,
-		MonthlyLimitBytes: 1000 * 1024 * 1024 * 1024, // 默认示例 1000 GiB
+		MonthlyLimitBytes: 1000 * 1024 * 1024 * 1024,
 		WarnPercent:       80,
 	}
 }
@@ -173,16 +176,16 @@ type AlertConfig struct {
 
 // AlertConfigView 为面向前端展示的脱敏配置视图（密钥只写不回显）。
 type AlertConfigView struct {
-	Enabled               bool   `json:"enabled"`
-	WebhookURL            string `json:"webhookUrl"`
-	HasWebhookSecret      bool   `json:"hasWebhookSecret"`
-	WebhookSecretMask     string `json:"webhookSecretMask"`
-	HasTelegramBotToken   bool   `json:"hasTelegramBotToken"`
-	TelegramBotTokenMask  string `json:"telegramBotTokenMask"`
-	TelegramChatID        string `json:"telegramChatId"`
-	AllowPrivateNetwork   bool   `json:"allowPrivateNetwork"`
-	NotifyOnWarn          bool   `json:"notifyOnWarn"`
-	NotifyOnLimit         bool   `json:"notifyOnLimit"`
+	Enabled              bool   `json:"enabled"`
+	WebhookURL           string `json:"webhookUrl"`
+	HasWebhookSecret     bool   `json:"hasWebhookSecret"`
+	WebhookSecretMask    string `json:"webhookSecretMask"`
+	HasTelegramBotToken  bool   `json:"hasTelegramBotToken"`
+	TelegramBotTokenMask string `json:"telegramBotTokenMask"`
+	TelegramChatID       string `json:"telegramChatId"`
+	AllowPrivateNetwork  bool   `json:"allowPrivateNetwork"`
+	NotifyOnWarn         bool   `json:"notifyOnWarn"`
+	NotifyOnLimit        bool   `json:"notifyOnLimit"`
 }
 
 // BackupInfo 描述单个备份快照归档元数据。
@@ -195,4 +198,97 @@ type BackupInfo struct {
 	SHA256     string `json:"sha256"`
 	AppVersion string `json:"appVersion"`
 	Note       string `json:"note,omitempty"`
+}
+
+// ClusterNodeRecord 表示主控数据库中注册的被控服务器节点记录。
+type ClusterNodeRecord struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	GroupName string `json:"groupName"`
+	Remark    string `json:"remark"`
+	TokenHash string `json:"-"`
+	TokenMask string `json:"tokenMask"`
+	CreatedAt int64  `json:"createdAt"`
+	LastSeen  int64  `json:"lastSeen"`
+	LastIP    string `json:"lastIp"`
+	Version   string `json:"version"`
+	Hostname  string `json:"hostname"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
+// AgentHeartbeatReport 为被控节点每 3 秒上报给主控中心的实时快照。
+type AgentHeartbeatReport struct {
+	NodeName         string                      `json:"nodeName,omitempty"`
+	Version          string                      `json:"version"`
+	Hostname         string                      `json:"hostname"`
+	OS               string                      `json:"os"`
+	Arch             string                      `json:"arch"`
+	DeployMode       string                      `json:"deployMode"` // binary | docker
+	CanSelfUpgrade   bool                        `json:"canSelfUpgrade"`
+	UptimeSeconds    int64                       `json:"uptimeSeconds"`
+	PanelPort        int                         `json:"panelPort"`
+	PrimaryInterface string                      `json:"primaryInterface"`
+	Interfaces       []InterfaceInfo             `json:"interfaces"`
+	RealtimeByIface  map[string]RealtimeSample   `json:"realtimeByIface"`
+	TodayRxBytes     int64                       `json:"todayRxBytes"`
+	TodayTxBytes     int64                       `json:"todayTxBytes"`
+	MonthRxBytes     int64                       `json:"monthRxBytes"`
+	MonthTxBytes     int64                       `json:"monthTxBytes"`
+	Quota            QuotaStatus                 `json:"quota"`
+	UpgradeState     string                      `json:"upgradeState"`
+	UpgradeMessage   string                      `json:"upgradeMessage"`
+	ReportedAt       int64                       `json:"reportedAt"`
+}
+
+// ClusterNodeSummary 为主控多机总览墙与横向对比接口返回的单节点综合视图（含 local 主控本机）。
+type ClusterNodeSummary struct {
+	ID               string          `json:"id"`
+	IsLocal          bool            `json:"isLocal"`
+	Name             string          `json:"name"`
+	GroupName        string          `json:"groupName"`
+	Remark           string          `json:"remark"`
+	Online           bool            `json:"online"`
+	LastSeen         int64           `json:"lastSeen"`
+	EndpointIP       string          `json:"endpointIp"`
+	IPv4             []string        `json:"ipv4"`
+	IPv6             []string        `json:"ipv6"`
+	PanelPort        int             `json:"panelPort"`
+	Version          string          `json:"version"`
+	Hostname         string          `json:"hostname"`
+	OS               string          `json:"os"`
+	Arch             string          `json:"arch"`
+	DeployMode       string          `json:"deployMode"`
+	CanSelfUpgrade   bool            `json:"canSelfUpgrade"`
+	UpgradeOutdated  bool            `json:"upgradeOutdated"`
+	UpgradeState     string          `json:"upgradeState"`
+	UpgradeMessage   string          `json:"upgradeMessage"`
+	UptimeSeconds    int64           `json:"uptimeSeconds"`
+	PrimaryInterface string          `json:"primaryInterface"`
+	Interfaces       []InterfaceInfo `json:"interfaces"`
+	RxBytesPerSec    float64         `json:"rxBytesPerSec"`
+	TxBytesPerSec    float64         `json:"txBytesPerSec"`
+	TodayRxBytes     int64           `json:"todayRxBytes"`
+	TodayTxBytes     int64           `json:"todayTxBytes"`
+	TodayTotalBytes  int64           `json:"todayTotalBytes"`
+	MonthRxBytes     int64           `json:"monthRxBytes"`
+	MonthTxBytes     int64           `json:"monthTxBytes"`
+	MonthTotalBytes  int64           `json:"monthTotalBytes"`
+	Quota            QuotaStatus     `json:"quota"`
+}
+
+// ClusterRPCRequest 为主控向已连接被控节点下发的受控类型化指令（严禁任意 Shell 命令）。
+type ClusterRPCRequest struct {
+	RequestID string            `json:"requestId"`
+	Action    string            `json:"action"` // query_stats | query_range | get_settings | save_settings | update_interface | import_vnstat | self_upgrade
+	Params    map[string]string `json:"params,omitempty"`
+	Payload   []byte            `json:"payload,omitempty"`
+}
+
+// ClusterRPCResponse 为被控节点执行类型化指令后的响应。
+type ClusterRPCResponse struct {
+	RequestID string `json:"requestId"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+	Payload   []byte `json:"payload,omitempty"`
 }
