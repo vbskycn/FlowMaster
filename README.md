@@ -2,205 +2,159 @@
 
 [![Latest Release](https://img.shields.io/github/v/release/vbskycn/FlowMaster)](https://github.com/vbskycn/FlowMaster/releases/latest)
 [![License](https://img.shields.io/github/license/vbskycn/FlowMaster)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-FlowMaster 是一个面向 Linux 服务器的轻量级网络流量监控面板。它通过系统 `vnstat` 读取历史与实时流量，由 Node.js/Express 提供 Web 页面和 API，并使用 systemd 管理生产服务。
+FlowMaster 是一个面向 Linux 服务器与 VPS 的**超轻量级网络流量实时监控与管理面板**。它由 **Go 静态单二进制 + 内置 SQLite + 现代化响应式 Web 界面** 构建，无需在宿主机安装 Node.js 或任何运行时依赖，常驻内存仅约 **10 ~ 15 MB**，开箱支持 **Docker 一键运行** 与宿主机 `systemd` 极速部署。
 
 ![FlowMaster 界面](assets/FlowMaster.jpg)
 
-## 功能概览
+## 核心特性
 
-- 自动发现并验证 vnstat 已记录的网络接口。
-- 展示实时、5 分钟粒度、小时、日、月和年流量统计。
-- 支持自定义日期范围查询和多网卡切换。
-- 提供响应式页面、深浅主题、图表与数据表格。
-- 使用有容量和内存上限的进程内 LRU 缓存。
-- 提供版本、缓存、进程内存、系统状态和 vnstat 诊断 API。
-- 安装、更新和卸载均保留 `/var/lib/vnstat` 历史数据。
+- **极致轻量高效**：单个静态二进制内嵌全部 Web 资源，直接读取 Linux 内核 `/proc/net/dev` 实现 1 秒级低开销实时吞吐与包速率推送（SSE），空闲 CPU 接近 `0%`。
+- **混合流量引擎（SQLite + vnstat 双兼容）**：
+  - **独立自采**：默认无需安装 `vnstat`，开箱即记录 5 分钟、小时、日、月、年及任意日期区间流量；
+  - **平滑兼容老环境**：支持 `Hybrid 智能融合` 或 `vnstat 直读` 模式，并支持在后台**一键将系统原有 `vnstat` 历史账本无损合并导入内置数据库**（对 `/var/lib/vnstat` 纯只读，绝不修改或删除）。
+- **VPS 月度流量包与超额告警**：支持自定义每月账单重置日（1–31 号）、灵活计费方向（双向 `RX+TX` / 仅上行 `TX` / 仅下行 `RX` / 单向取大 `max(RX,TX)`）、月度总额度进度条、月底用量预测，以及 Webhook / Telegram 超额告警推送。
+- **现代化 Web 看板与可视化管理中心**：
+  - 明暗主题自适应、手机与桌面响应式设计、`Mbps` / `MiB/s` 单位一键切换；
+  - 网卡智能排序，默认折叠过滤 `docker*` / `veth*` / `br-*` 等虚拟接口，支持自定义网卡备注别名与显隐控制；
+  - 增强型数据明细表（含序号列、`20 / 50 / 100` 分页切换、列排序与关键词搜索）；
+  - 前台默认免密查看，亦可在后台一键开启“全站密码保护”；后台内置独立倒序系统与告警日志查看器。
+- **内置可视化备份与还原闭环**：后台一键创建 SQLite 一致性快照、历史快照列表查看、一键下载到本地、从列表还原或上传本地 `.tar.gz` 备份一键还原（自动校验 `PRAGMA integrity_check`、还原前自动留存保护快照、异常自动回滚）。
 
-## 系统要求
+---
 
-- 使用 systemd 247 或更高版本的 Linux 发行版；Debian 是当前真实验证环境。安装器会读取 `systemctl --version` 并在改动服务前拒绝过旧版本。
-- Node.js 18 或更高版本，以及与该版本兼容的 npm；新部署优先使用仍受维护的 Node.js 22/24 LTS。
-- vnstat 2.x。
-- root 权限，用于安装依赖和创建 systemd 服务。
-- 默认监听 TCP `10089`；安装前请确认端口可用。
+## 快速开始（推荐 Docker 部署）
 
-安装器支持 `apt-get`、`dnf` 或 `yum`，并会补装缺失的基础依赖。若发行版仓库中的 Node.js 低于 18，请先通过发行版或 Node.js 官方渠道升级。
+监控宿主机真实物理网卡需使用 `--network host` 模式，并将 `/data` 绑定挂载到明确的宿主机目录以持久化流量数据与配置。
 
-## 安装与升级
-
-首次安装和后续升级使用同一个脚本。已有安装会在菜单中显示“安全更新/重新部署 FlowMaster”。
-
-### GitHub 直连
+### 方式一：`docker run` 一行启动
 
 ```bash
-curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o install.sh \
-  https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+mkdir -p /opt/flowmaster/data
+
+docker run -d \
+  --name flowmaster \
+  --restart unless-stopped \
+  --network host \
+  -e TZ=Asia/Shanghai \
+  -e PORT=10089 \
+  -v /opt/flowmaster/data:/data \
+  ghcr.io/vbskycn/flowmaster:1.1.21
 ```
 
-### 国内网络
+> **提示**：如果你的服务器此前已经运行了系统 `vnstat` 并希望融合查看或一键导入历史数据，可额外加上只读挂载 `-v /var/lib/vnstat:/var/lib/vnstat:ro`。
 
-下面的命令尝试让安装脚本和源码归档都通过代理下载；只给第一条 `curl` 加代理并不能加速安装器后续的源码下载。
+### 方式二：`docker compose` 部署
+
+下载仓库中的 [compose.yaml](compose.yaml) 后启动：
 
 ```bash
-curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o install.sh \
-  https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh
-chmod +x install.sh
-sudo env \
-  FLOWMASTER_DOWNLOAD_URL='https://gh-proxy.com/https://github.com/vbskycn/FlowMaster/archive/refs/heads/main.tar.gz' \
-  ./install.sh
+docker compose up -d
 ```
 
-`gh-proxy.com` 是第三方服务，其可用性和返回内容不由本项目控制。能直连 GitHub 时优先使用官方地址；对可复现部署要求较高时，请固定 Release 标签并从可信渠道核对 SHA-256，参见[安装与运维指南](docs/operations.md#固定版本与下载校验)。
-
-安装器与备份工具共享维护锁；源码归档通过结构校验后才会执行可复现依赖安装和带随机实例令牌的临时冒烟测试。目录替换、unit 和控制命令更新处于同一回滚事务中，收到信号或启动验证失败都会恢复旧状态。成功更新后的旧程序以 `/opt/.flowmaster-rollback-*` 保留。
-
-> 从旧 PM2 部署迁移时，如果安装器检测到可信且仍包含 FlowMaster 的 PM2 systemd 服务，无论它当前健康还是无响应，都会列出受影响的已保存应用并要求输入 `RECOVER-PM2`。请先核对列表，不要自行执行 `pm2 delete`、`pm2 kill` 或直接杀死 PM2 守护进程。详细流程见[PM2 迁移与僵尸进程处理](docs/operations.md#pm2-迁移与僵尸进程处理)。
-
-## 访问与服务管理
-
-安装完成后访问：
+启动后在浏览器访问：
 
 ```text
 http://服务器IP:10089
 ```
 
-常用命令：
+首次点击右上角 **「管理登录」** 时，页面会引导你初始化管理员密码。你也可以通过环境变量 `-e ADMIN_PASSWORD='你的强密码'` 预先指定初始密码。
+
+---
+
+## 宿主机二进制一键安装（无需 Docker）
+
+适用于未安装 Docker 的轻量小内存 VPS（支持 `x86_64` 与 `arm64`，自动配置受限 `flowmaster` 系统账号与 `systemd` 守护服务）：
 
 ```bash
-sudo flowmaster start
-sudo flowmaster stop
-sudo flowmaster restart
-sudo flowmaster status
-sudo flowmaster logs
+curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o install.sh \
+  https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh
+chmod +x install.sh
+sudo ./install.sh install
 ```
 
-也可以直接使用 systemd：
+常用服务管理命令：
 
 ```bash
-sudo systemctl status flowmaster.service --no-pager
-sudo journalctl -u flowmaster.service -f
+sudo flowmaster-ctl status
+sudo flowmaster-ctl restart
+sudo flowmaster-ctl logs
+sudo flowmaster-ctl version
 ```
 
-公网部署时应使用 HTTPS 反向代理、限制 `10089` 的访问来源，并设置 `ADMIN_TOKEN`。该令牌只保护管理接口，不会为整个面板增加登录认证；如需限制全部页面和查询 API，请同时在反向代理层配置访问控制。
+默认路径说明：
 
-生产服务以专用的 `flowmaster` 系统账号运行，不再以 root 运行。程序目录仅允许 root 写入，服务账号只获得读取程序、配置和 vnstat 数据所需的权限。
+| 项目 | 路径 |
+| :--- | :--- |
+| 可执行程序 | `/usr/local/bin/flowmaster` |
+| 配置文件 | `/etc/flowmaster/flowmaster.env`（`0640`） |
+| 持久化数据目录 | `/var/lib/flowmaster`（含 `flowmaster.db`、`backups/`、`logs/`） |
+| 系统服务单元 | `/etc/systemd/system/flowmaster.service` |
 
-## 配置
+---
 
-生产安装目录是 `/opt/flowmaster`。首次创建配置文件时：
+## 数据持久化、备份与恢复
 
-```bash
-sudo cp -n /opt/flowmaster/.env.example /opt/flowmaster/.env
-sudo chown root:flowmaster /opt/flowmaster/.env
-sudo chmod 640 /opt/flowmaster/.env
-sudo editor /opt/flowmaster/.env
-sudo systemctl restart flowmaster.service
-```
+FlowMaster 的全部配置、历史流量与快照均保存在 `DATA_DIR`（Docker 内为 `/data`，systemd 部署为 `/var/lib/flowmaster`）：
 
-更新时安装器会保留已有 `.env`。不要用当前 Shell 的 `export` 代替配置文件；systemd 服务不会继承该终端环境。
+1. **创建与下载备份**：进入「管理后台 → 备份与还原」，点击 **「一键创建备份快照」**，随后点击 **「下载到本地」** 即可将 `.tar.gz` 备份包离线保存。
+2. **一键恢复数据**：支持在快照列表中直接点击 **「一键还原」**，或点击 **「上传本地备份还原 (.tar.gz)」** 上传备份包恢复。系统在切换前会自动校验 SHA-256 与 SQLite `PRAGMA integrity_check`，并自动创建一份 `pre-restore-*` 保护快照，确保现网数据万无一失。
+3. **导入旧版 `vnstat` 数据**：若挂载或安装了系统 `vnstat`，可在「管理后台 → 概览与数据源」中点击 **「从系统 vnstat 幂等导入历史数据」**，多次执行也不会重复累加流量，且绝不修改原 `/var/lib/vnstat`。
 
-常用安全项：
+---
 
-```dotenv
-ADMIN_TOKEN=请替换为高强度随机值
-ALLOW_ANONYMOUS_ADMIN=false
-CORS_ORIGINS=https://monitor.example.com
-TRUST_PROXY=false
-```
+## 升级与回滚
 
-只有 FlowMaster 确实位于可信反向代理之后时才能启用 `TRUST_PROXY`。全部配置项、默认值和边界见[安装与运维指南](docs/operations.md#运行配置)。
+### Docker 部署升级与回滚
 
-## vnstat 数据、备份与卸载
+1. **升级前备份**：建议先在 Web 管理后台下载一份最新备份快照。
+2. **拉取新版本并重建**：
+   ```bash
+   docker pull ghcr.io/vbskycn/flowmaster:<新版本号>
+   # 更新 compose.yaml 或 docker run 中的镜像标签后重新启动
+   docker compose up -d
+   ```
+3. **验证运行**：访问 `http://127.0.0.1:10089/api/version` 核对版本号与页面状态。
+4. **快速回滚**：将镜像标签改回上一版本并执行 `docker compose up -d`；如需回退数据库，可在后台「备份与还原」中一键恢复升级前快照。
 
-FlowMaster 不拥有 vnstat 数据库。安装、更新和卸载不会删除 `/var/lib/vnstat`。
+### systemd 部署升级与卸载
 
-安装后可运行交互式备份恢复工具：
+- **安全升级**：重新运行 `sudo ./install.sh install`，脚本会自动备份旧二进制并在健康检查失败时自动回退；若宿主机存在旧版 `/opt/flowmaster` Node.js 部署，脚本会自动迁移 `.env` 并将旧程序安全归档至 `/var/backups/flowmaster/`。
+- **安全卸载**：运行 `sudo ./install.sh uninstall`，仅移除服务与二进制程序，完整保留 `/var/lib/flowmaster` 与系统 `/var/lib/vnstat`。
 
-```bash
-sudo bash /opt/flowmaster/backup_vnstat.sh
-```
+---
 
-默认备份目录是 `/var/backups/flowmaster/vnstat`。工具会在停服前验证归档结构、内外校验和与 vnstat 数据库，恢复失败或被信号中断时会换回原数据。
+## 常用环境变量
 
-卸载时重新运行安装脚本并选择“卸载 FlowMaster”。程序文件会原子归档；备份根目录与 `/opt` 同一文件系统时位于 `/var/backups/flowmaster/.flowmaster-uninstalled-*`，否则保留为 `/opt/.flowmaster-uninstalled-*`。vnstat 数据保持不变。
+完整配置示例见 [.env.example](.env.example)，运维与安全细节见 [安装与运维指南](docs/operations.md)：
 
-完整的备份、恢复和回滚边界见[安装与运维指南](docs/operations.md#vnstat-备份与恢复)。
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `HOST` | `0.0.0.0` | HTTP 监听地址 |
+| `PORT` | `10089` | HTTP 监听端口 |
+| `DATA_DIR` | `./data`（容器内 `/data`） | SQLite 数据库、日志与备份持久化目录 |
+| `REALTIME_INTERVAL_MS` | `1000` | 内核实时采样间隔（毫秒，`1000`–`60000`） |
+| `ADMIN_PASSWORD` | 空 | 首次启动自动初始化的管理员密码（未设时由页面引导设置） |
+| `ADMIN_TOKEN` | 空 | 可选 API 管理令牌（请求头 `X-Admin-Token`） |
+| `TRUST_PROXY` | `false` | 位于可信 HTTPS 反向代理后方时设为 `true` |
+| `CORS_ORIGINS` | 空 | 逗号分隔的精确跨域白名单 |
 
-## API
+---
 
-常用端点：
+## 文档导航
 
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| GET | `/api/interfaces` | 获取可用网络接口 |
-| GET | `/api/stats/:interface/:period` | 获取指定周期统计 |
-| GET | `/api/stats/:interface/range/:startDate/:endDate` | 获取日期范围统计 |
-| GET | `/api/version` | 获取产品版本 |
-| GET | `/api/system/status` | 获取运行状态 |
-| POST | `/api/cache/clear` | 清空缓存，管理接口 |
-| GET | `/api/test/vnstat` | 执行 vnstat 诊断，管理接口 |
+- [系统架构说明](docs/architecture.md)
+- [HTTP API 文档（含 v1 与旧版兼容端点）](docs/api.md)
+- [安装、安全与运维指南](docs/operations.md)
+- [开发与贡献指南](CONTRIBUTING.md)
+- [版本更新记录](CHANGELOG.md)
 
-`period` 支持 `l`、`5`、`h`、`d`、`m`、`y`。管理接口默认拒绝匿名请求；配置 `ADMIN_TOKEN` 后使用请求头 `X-Admin-Token`。确需兼容可信内网旧调用方时可显式设置 `ALLOW_ANONYMOUS_ADMIN=true`。
-
-非实时统计在保留现有 `data` 文本的同时提供 MiB 精度的 `series`；实时响应提供 `timestamp`、`stale` 和 `ageMs`，便于客户端识别陈旧样本。
-
-请求、响应、鉴权和状态码说明见 [API 文档](docs/api.md)。
-
-## 常见问题
-
-### 服务无法启动
-
-```bash
-sudo flowmaster status
-sudo journalctl -u flowmaster.service -n 100 --no-pager
-curl --fail http://127.0.0.1:10089/api/version
-```
-
-如果修改过 `PORT` 或 `HOST`，请按 `/opt/flowmaster/.env` 中的实际值检查。
-
-### vnstat 没有数据
-
-```bash
-sudo systemctl status vnstat --no-pager
-vnstat --dbiflist 1
-ip route show default
-```
-
-新接口需要先由 vnstat 建库和采样；刚添加后可能需要等待一个采样周期。
-
-### 端口被占用
-
-```bash
-sudo ss -ltnp | grep ':10089'
-```
-
-确认占用进程后再决定是释放端口，还是修改 `/opt/flowmaster/.env` 中的 `PORT` 并重启服务。
-
-### PM2 高 CPU 并出现大量 `ps` 僵尸
-
-不要反复调用 PM2 命令。下载最新版安装脚本并重新执行；无论旧 PM2 当前健康还是无响应，安装器都只会在确认 PM2 守护进程、独立 systemd 服务、cgroup 和保存清单均可信后提供 `RECOVER-PM2` 迁移。恢复备份位于 `/var/backups/flowmaster/pm2-recovery-*`。
-
-更多诊断步骤见[安装与运维指南](docs/operations.md#故障排查)。
-
-## 开发
-
-```bash
-npm ci
-npm run test:ci
-```
-
-源码调试、Linux 测试、提交规范和完整发布前检查见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目版本以 [package.json](package.json) 的 `version` 为唯一来源，正式变化记录在 [CHANGELOG.md](CHANGELOG.md)。
-
-## 获取帮助
+## 获取帮助与支持
 
 - 问题反馈：[GitHub Issues](https://github.com/vbskycn/FlowMaster/issues)
 - 版本发布：[GitHub Releases](https://github.com/vbskycn/FlowMaster/releases)
 - 开源协议：[MIT](LICENSE)
 
-如果 FlowMaster 对你有帮助，也可以支持项目：
+如果 FlowMaster 对你有帮助，欢迎支持项目：
 
 ![支持项目](assets/dsm.jpg)

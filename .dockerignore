@@ -1,0 +1,18 @@
+# 忽略 Git、文档、测试、本地数据与宿主机缓存（镜像内严禁包含 .md 文档与秘密）
+.git
+.github
+.gitignore
+.gitattributes
+*.md
+docs/
+test/
+assets/
+data/
+node_modules/
+web/node_modules/
+web/dist/
+.env
+.env.*
+*.log
+*.exe
+flowmaster

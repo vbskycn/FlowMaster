@@ -13,54 +13,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  node-test:
+  build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [18, 22, 24]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-      - name: Test
-        run: npm run test:ci
 
-  linux-safeguards:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-      - name: Check shell scripts
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Web UI
+        working-directory: web
         run: |
-          shellcheck --severity=warning install.sh backup_vnstat.sh test/*.sh
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go Vet & Unit Tests
+        run: |
+          go vet ./...
+          go test -race -v ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o flowmaster ./cmd/flowmaster
+          ./flowmaster --version
+
+      - name: Check Shell Scripts
+        run: |
           bash -n install.sh
-          bash -n backup_vnstat.sh
-          bash -n test/backup-vnstat-lifecycle.test.sh
-          bash -n test/backup-vnstat-safety.test.sh
-          bash -n test/install-linux.test.sh
-          bash -n test/install-transaction.test.sh
-          bash -n test/pm2-recovery-systemd.test.sh
-      - name: Test Linux safeguards
+          shellcheck --severity=warning install.sh
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build & Smoke Test Docker Image
         run: |
-          bash test/backup-vnstat-lifecycle.test.sh
-          bash test/backup-vnstat-safety.test.sh
-          bash test/install-linux.test.sh
-          bash test/install-transaction.test.sh
-      - name: Audit dependencies
-        run: npm audit --audit-level=moderate
+          docker build -t flowmaster:ci .
+          docker run -d --name fm-smoke -p 10089:10089 flowmaster:ci
+          for i in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:10089/api/version | grep -q '"version"'; then
+              echo "Container smoke check passed"
+              docker rm -f fm-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs fm-smoke
+          docker rm -f fm-smoke
+          exit 1

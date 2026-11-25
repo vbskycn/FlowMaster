@@ -1,0 +1,24 @@
+services:
+  flowmaster:
+    image: ghcr.io/vbskycn/flowmaster:1.1.21
+    container_name: flowmaster
+    restart: unless-stopped
+    # 使用 host 网络模式以便零开销读取宿主机真实物理网卡 (/proc/net/dev)
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+      HOST: 0.0.0.0
+      PORT: 10089
+      DATA_DIR: /data
+      # 若挂载了宿主机 /var/lib/vnstat，可在此指定目录以启用 Hybrid 融合或一键导入
+      VNSTAT_DB_DIR: /var/lib/vnstat
+    volumes:
+      # 持久化 SQLite 数据库、会话密钥、轮转日志与备份快照（请使用明确宿主机目录，禁用匿名卷）
+      - ./data:/data
+      # 可选：以只读方式挂载宿主机原有 vnstat 数据目录，支持混合读取或一键导入老数据
+      # - /var/lib/vnstat:/var/lib/vnstat:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:10089/api/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify Tag Matches VERSION
+        id: meta
+        run: |
+          FILE_VER="$(awk -F= '/^APP_VERSION=/ { gsub(/[[:space:]"'"'"']/, "", $2); print $2 }' VERSION)"
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [[ "$FILE_VER" != "$TAG_VER" ]]; then
+            echo "Tag (${TAG_VER}) does not match VERSION (${FILE_VER})" >&2
+            exit 1
+          fi
+          echo "version=${FILE_VER}" >> "$GITHUB_OUTPUT"
+          REPO_LOWER="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "ghcr_image=ghcr.io/${REPO_LOWER}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Web UI
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test & Build Multi-Arch Release Archives
+        run: |
+          go test -race ./...
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build -trimpath -ldflags="-s -w" -o dist/flowmaster ./cmd/flowmaster
+            tar -czf "dist/flowmaster-linux-${arch}.tar.gz" -C dist flowmaster
+            rm -f dist/flowmaster
+          done
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum flowmaster-linux-amd64.tar.gz flowmaster-linux-arm64.tar.gz install.sh > SHA256SUMS)
+
+      - name: Login to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push GHCR Image
+        run: |
+          IMG="${{ steps.meta.outputs.ghcr_image }}"
+          VER="${{ steps.meta.outputs.version }}"
+          docker build \
+            -t "${IMG}:${VER}" \
+            -t "${IMG}:latest" \
+            .
+          docker push "${IMG}:${VER}"
+          docker push "${IMG}:latest"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            gh release create "${TAG}" dist/* \
+              --title "FlowMaster ${TAG}" \
+              --generate-notes
+          fi
