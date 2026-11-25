@@ -55,4 +55,16 @@ func TestExtractBinaryFromTarGz(t *testing.T) {
 	if !bytes.Equal(extracted, payload) {
 		t.Fatalf("extracted payload mismatch")
 	}
+
+	det1, err := buildDeterministicBinaryTarGz(payload)
+	if err != nil {
+		t.Fatalf("buildDeterministicBinaryTarGz 1 failed: %v", err)
+	}
+	det2, err := buildDeterministicBinaryTarGz(payload)
+	if err != nil {
+		t.Fatalf("buildDeterministicBinaryTarGz 2 failed: %v", err)
+	}
+	if !bytes.Equal(det1, det2) {
+		t.Fatalf("expected deterministic tar.gz output to be byte-identical")
+	}
 }

@@ -12,9 +12,9 @@ FlowMaster 是一个面向 Linux 服务器与多 VPS 集群的**超轻量级网�
 
 - **一主多从统一管理（支持几十上百台 VPS 集中管控）**：
   - **同体合一**：同一个二进制/镜像既可独立单机使用，也可作为**主控中心（Hub）**或**被控节点（Agent）**；
-  - **一条命令接入**：主控页面点击「+ 添加服务器节点」自动生成专属一键命令，被控机粘贴执行即刻上线（穿透 NAT 与纯 IPv6，同时默认保留被控机本地 `10089` 独立面板）；
+  - **默认主控分发安装包（免连 GitHub）**：主控页面点击「+ 添加服务器节点」**默认由主控机直接下发安装脚本与二进制包**，国内机器无需访问 GitHub 或依赖第三方公共代理即可秒速安装上线（取消勾选则切换回 GitHub / 加速源拉取；同时默认保留被控机本地 `10089` 独立面板）；
   - **多机总览对比与下钻详情**：一屏掌握所有机器在线状态、实时总带宽、今日/本月流量及横向排行对比图；点击任意机器即可像看本机一样查看其秒级波形、5m/h/d/m/y/区间明细，并可远程调整月度配额；
-  - **统一远程自升级**：主控后台支持勾选单台或全部二进制节点一键远程升级（自动识别国内代理、强制核验 `SHA256SUMS` 并平滑重启）。
+  - **统一远程自升级**：主控后台支持勾选单台或全部二进制节点一键远程升级（优先从主控分发源拉取新包，自动核验 `SHA256SUMS` 并平滑重启）。
 - **极致轻量 + 混合流量引擎（SQLite + vnstat 双兼容）**：
   - 直接读取 Linux `/proc/net/dev` 实现 1 秒级低开销实时吞吐推送（SSE），无需预装 `vnstat` 即可记录全周期流量；
   - 支持 `Hybrid 智能融合` 或一键将宿主机原有 `/var/lib/vnstat` 历史账本无损合并导入内置数据库（纯只读不修改原文件）。
@@ -64,22 +64,75 @@ sudo ./install.sh uninstall
 如果你有几十台服务器希望在一个页面集中查看、对比和统一升级：
 
 1. **部署主控机（Hub）**：任选一台公网可达的机器（建议绑定双栈域名并反代 HTTPS，或直接使用公网 `IP:10089`），执行 `sudo ./install.sh docker` 或 `sudo ./install.sh binary` 完成部署，打开页面点击右上角 **「管理登录」** 设置管理员密码。
-2. **生成接入命令**：在主控顶部切换到 **「🌐 多机总览」** → 点击 **「+ 添加服务器节点」**，填写主控访问地址与可选机器名称/分组，点击生成并一键复制命令（形如）：
+2. **生成接入命令（默认主控直发安装包，国内小鸡免连 GitHub）**：在主控顶部切换到 **「🌐 多机总览」** → 点击 **「+ 添加服务器节点」**，保持默认勾选 **「由本主控机直接分发安装脚本与二进制包」**（取消勾选才从 GitHub 或公共代理加速地址分发），点击生成并一键复制命令（形如）：
    ```bash
-   curl -fsSL --connect-timeout 5 https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh -o install.sh || \
-   curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh -o install.sh && \
-   chmod +x install.sh && sudo ./install.sh join --hub 'http://主控IP或域名:10089' --token 'fm_专属节点密钥' --name '香港-HK1'
+   curl -fsSL 'https://主控地址/api/v1/cluster/dist/install.sh?token=fm_专属节点密钥' -o install.sh && \
+   chmod +x install.sh && sudo ./install.sh join --hub 'https://主控地址' --token 'fm_专属节点密钥' --mirror-hub --name '香港-HK1'
    ```
-3. **被控机粘贴执行**：在每台被控 VPS 上执行上述命令，脚本会自动完成二进制部署、默认开放本机 `10089` 面板并放行系统防火墙（若不希望被控机开放本地 Web 端口，可在命令末尾加 `--no-web`），2 秒内即可在主控看到该机器实时网速与历史统计！
-4. **后续统一升级**：新版本发布后，只需在主控「多机总览 → 🚀 统一远程升级」中全选在线节点点击升级，所有二进制被控节点即会自动下载校验并平滑重启至新版本。
+3. **被控机粘贴执行**：在每台被控服务器上执行上述命令，脚本会直接从主控拉取通过 SHA-256 校验的静态二进制包完成部署、默认开放本机 `10089` 面板并放行系统防火墙（若不希望被控机开放本地 Web 端口，可使用弹窗中的 `--no-web` 纯探针命令），2 秒内即可在主控看到该机器实时网速与历史统计！
+4. **后续统一升级**：新版本发布后，只需先更新主控，再在主控「多机总览 → 🚀 统一远程升级」中全选在线节点点击升级，所有二进制被控节点即会优先从主控下载校验并平滑重启至新版本。
+
+---
+
+## 宝塔面板（Nginx）反向代理与 Cloudflare CDN 配置指南
+
+### 1. 宝塔面板反向代理必看注意事项
+
+在宝塔面板新建站点并为 FlowMaster（默认 `http://127.0.0.1:10089`）添加反向代理时，请注意以下 **5 点**：
+
+1. **严禁勾选「开启缓存」**：新建反代时不要开启宝塔静态缓存，否则 `/api/*` 实时数据与登录状态会被缓存。
+2. **关闭代理缓冲并调大读超时**：在反代配置文件中加入 `proxy_buffering off;` 与 `proxy_read_timeout 3600s;`，否则首页秒级网速（SSE）会卡顿延迟，且每 60 秒断流重连一次。
+3. **开启 `TRUST_PROXY=true` 并透传真实访客 IP**：
+   - 在 FlowMaster 配置中设置 `TRUST_PROXY=true`（二进制编辑 `/etc/flowmaster/flowmaster.env` 后执行 `sudo flowmaster-ctl restart`，Docker 添加 `-e TRUST_PROXY=true`），使系统自动按 HTTPS 启用 `Secure` Cookie 并按真实客户端 IP 执行登录防爆破限流（原生兼容识别 `CF-Connecting-IP` 与 `X-Forwarded-For`）。
+4. **宝塔 WAF / CC 防护白名单**：若启用了宝塔 Nginx 防火墙，请将 URL 前缀 `^/api/v1/cluster/` 加入 **URL 白名单**，防止几十台子节点每 3 秒一次的心跳上报被误判为 CC 攻击拉黑。
+5. **收敛宿主机监听地址（可选加固）**：配置好宝塔 `443` 反代后，可将 FlowMaster 的 `HOST` 改为 `127.0.0.1`，对外无需再暴露 `10089` 端口，浏览面板与子节点 `join` 统一走 `443` HTTPS。
+
+#### 宝塔「反向代理 → 配置文件」可直接替换的推荐配置：
+
+```nginx
+# PROXY-START/
+location ^~ /
+{
+    proxy_pass http://127.0.0.1:10089;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+
+    proxy_set_header Host $host;
+    # 若前端套了 Cloudflare，自动取 CF-Connecting-IP；未套 CDN 时自动回退 $remote_addr
+    set $real_client_ip $remote_addr;
+    if ($http_cf_connecting_ip != "") {
+        set $real_client_ip $http_cf_connecting_ip;
+    }
+    proxy_set_header X-Real-IP $real_client_ip;
+    proxy_set_header X-Forwarded-For $real_client_ip;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # 关键：关闭缓冲与缓存，保证 SSE 秒级网速与 25s 反向长轮询实时透传
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+
+    # 允许后台上传本地备份归档一键还原
+    client_max_body_size 128m;
+}
+# PROXY-END/
+```
+
+### 2. Cloudflare CDN 兼容性与「双域名」最佳实践
+
+- **单域名直接开启 Cloudflare（小黄云）可用**：主从心跳与反向长轮询（服务端挂起 `25s`，远低于 Cloudflare `100s` 的 `524` 超时限制）均走标准 HTTP/HTTPS，开启 CDN 后仍可正常连接。若开启了 CF Bot Fight Mode / 质询盾，请在 Cloudflare `Security -> WAF -> Custom rules` 为 URI Path 前缀 `/api/v1/cluster/` 添加一条 **Skip（跳过质询）** 规则。
+- **双域名方案（国内机器多时强烈推荐）**：在同一个宝塔站点绑定两个域名：
+  - **日常查看域名**（如 `flow.example.com`，**开启 Cloudflare CDN 小黄云**）：浏览器打开面板走 CDN 加速并隐藏源站 IP；
+  - **节点接入专用域名**（如 `hub-direct.example.com`，**设为灰色云朵仅 DNS 直连**）：填在主控后台「主控公网接入地址」中，专门供国内/海外被控机器直连上报心跳与满速拉取主控分发的安装包，彻底避开晚高峰 CDN 减速与盾拦截。
 
 ---
 
 ## 手动 Docker 部署与升级
 
 官方同步发布 `linux/amd64` 与 `linux/arm64` 多架构镜像：
-- **Docker Hub**：`zhoujie218/flowmaster:2.1.0`（及 `zhoujie218/flowmaster:latest`）
-- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.1.0`（及 `ghcr.io/vbskycn/flowmaster:latest`）
+- **Docker Hub**：`zhoujie218/flowmaster:2.2.0`（及 `zhoujie218/flowmaster:latest`）
+- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.2.0`（及 `ghcr.io/vbskycn/flowmaster:latest`）
 
 ### `docker run` 部署（默认双栈 IPv4/IPv6）
 
@@ -94,7 +147,7 @@ docker run -d \
   -e HOST=:: \
   -e PORT=10089 \
   -v /opt/flowmaster/data:/data \
-  zhoujie218/flowmaster:2.1.0
+  zhoujie218/flowmaster:2.2.0
 ```
 
 > **提示**：
@@ -109,7 +162,7 @@ docker run -d \
 docker compose up -d
 
 # 升级版本（建议升级前先在管理后台下载一份备份快照）
-docker pull zhoujie218/flowmaster:2.1.0
+docker pull zhoujie218/flowmaster:2.2.0
 docker compose up -d
 ```
 

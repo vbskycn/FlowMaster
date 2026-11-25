@@ -104,6 +104,7 @@ func main() {
 			agent.SendImmediateHeartbeat()
 		}
 	})
+	upMgr.ConfigureCluster(cfg.DataDir, cfg.HubURL, cfg.HubToken)
 	hub := cluster.NewHub(cfg, st, engine, quotaSvc, upMgr, logMgr)
 	agent = cluster.NewAgent(cfg, st, engine, quotaSvc, upMgr, logMgr)
 

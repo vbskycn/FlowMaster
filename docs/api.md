@@ -67,11 +67,15 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 
 为保证已有探针或脚本平滑升级，以下端点完全保留原有路径与字段结构：
 
-- `GET /api/version` -> `{"version": "2.1.0"}`
+- `GET /api/version` -> `{"version": "2.2.0"}`
+- `GET /api/interfaces` -> `{"interfaces": ["eth0"]}`
+- `GET /api/stats/{interface}/{period}`（`period`: `l`, `5`, `h`, `d`, `m`, `y`，保留 `data` 文本行与 MiB 精度 `series`）
+- `GET /api/stats/{interface}/range/{startDate}/{endDate}`
+- `GET /api/cache/stats` & `POST /api/cache/clear`
 
 ---
 
-## 三、多机集群管理 `/api/v1/cluster/*` 端点
+## 三、多机集群管理与文件分发 `/api/v1/cluster/*` 端点
 
 | 方法 | 路径 | 权限 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -79,13 +83,13 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 | `GET` | `/api/v1/cluster/nodes/{id}/interfaces` | 视图访问 | 获取指定远程节点的网卡与 IPv4/IPv6 元数据 |
 | `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/{period}` | 视图访问 | 通过反向长轮询隧道实时查询指定节点的周期统计 |
 | `GET` | `/api/v1/cluster/nodes/{id}/stats/{interface}/range/{start}/{end}` | 视图访问 | 查询指定节点的日期范围流量统计 |
-| `POST` | `/api/v1/admin/cluster/nodes` | 管理员 | 注册新节点并生成带专属密钥与国内自动代理的一键接入命令 |
+| `GET` | `/api/v1/cluster/dist/install.sh` | 节点 Token / 管理员 | 下发主控内嵌 `install.sh` 脚本（支持 `?token=` 或 `Authorization: Bearer`） |
+| `GET` | `/api/v1/cluster/dist/version` | 节点 Token / 管理员 | 查询主控当前分发目标版本号 |
+| `GET` | `/api/v1/cluster/dist/{version}/SHA256SUMS` | 节点 Token / 管理员 | 获取主控分发包 SHA-256 校验清单 |
+| `GET` | `/api/v1/cluster/dist/{version}/flowmaster-linux-{arch}.tar.gz` | 节点 Token / 管理员 | 由主控直出（同架构零外网）或缓存下发预编译静态二进制归档 |
+| `POST` | `/api/v1/admin/cluster/nodes` | 管理员 | 注册新节点并生成接入命令（默认 `useHubMirror=true` 走主控分发，设为 `false` 走 GitHub/代理） |
 | `PUT` | `/api/v1/admin/cluster/nodes/{id}` | 管理员 | 修改节点名称、分组标签与备注 |
 | `DELETE` | `/api/v1/admin/cluster/nodes/{id}` | 管理员 | 从主控移除节点 |
 | `GET/PUT` | `/api/v1/admin/cluster/nodes/{id}/config` | 管理员 | 远程读取或下发保存指定节点的月度流量包配额与引擎设置 |
 | `POST` | `/api/v1/admin/cluster/upgrade` | 管理员 | 向勾选的一台或多台节点批量下发受控原子自升级指令 |
-- `GET /api/interfaces` -> `{"interfaces": ["eth0"]}`
-- `GET /api/stats/{interface}/{period}`（`period`: `l`, `5`, `h`, `d`, `m`, `y`，保留 `data` 文本行与 MiB 精度 `series`）
-- `GET /api/stats/{interface}/range/{startDate}/{endDate}`
-- `GET /api/cache/stats` & `POST /api/cache/clear`
 - `GET /api/system/memory`、`GET /api/system/status`、`GET /api/test/vnstat`

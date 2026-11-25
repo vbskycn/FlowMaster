@@ -38,20 +38,29 @@
 
 公网暴露建议前置 HTTPS 反向代理（如 Caddy 或 Nginx），并在 FlowMaster 中设置 `TRUST_PROXY=true`：
 
-- 设置 `TRUST_PROXY=true` 后，FlowMaster 会读取可信代理传递的 `X-Forwarded-For` 进行限流与防爆破识别，并根据 `X-Forwarded-Proto: https` 自动为会话 Cookie 启用 `Secure` 属性。
+- 设置 `TRUST_PROXY=true` 后，FlowMaster 会优先读取可信代理传递的 `CF-Connecting-IP`、`X-Forwarded-For` 或 `X-Real-IP` 进行限流与防爆破识别，并根据 `X-Forwarded-Proto: https` 自动为会话 Cookie 启用 `Secure` 属性。
+- 若启用了宝塔 Nginx 防火墙或 Cloudflare WAF Bot 质询，请将 `/api/v1/cluster/` 加入白名单（Skip），或使用双域名方案（查看域名套 CDN、直连域名填入后台「主控公网接入地址」供被控节点心跳上报与主控安装包分发）。
 - 在局域网直接通过 `http://内网IP:10089` 访问时，会话 Cookie 自动保持非 `Secure` 模式，剪贴板复制自动启用兼容回退，不影响内网运维调试。
-- 反向代理转发 `/api/v1/stream/realtime`（SSE 实时流）时，建议关闭代理缓冲（FlowMaster 已自动响应 `X-Accel-Buffering: no`）。Nginx 参考片段：
+- 反向代理转发 `/api/v1/stream/realtime`（SSE 实时流）与 `/api/v1/cluster/agent/poll`（25s 长轮询）时，务必关闭代理缓存与缓冲。宝塔面板 / Nginx 推荐片段：
 
 ```nginx
-location / {
+location ^~ / {
     proxy_pass http://127.0.0.1:10089;
     proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    set $real_client_ip $remote_addr;
+    if ($http_cf_connecting_ip != "") {
+        set $real_client_ip $http_cf_connecting_ip;
+    }
+    proxy_set_header X-Real-IP $real_client_ip;
+    proxy_set_header X-Forwarded-For $real_client_ip;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_buffering off;
+    proxy_cache off;
     proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_max_body_size 128m;
 }
 ```
 

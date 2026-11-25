@@ -22,7 +22,7 @@ ENV GOPROXY=${GOPROXY} CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY VERSION embed.go ./
+COPY VERSION embed.go install.sh ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY --from=web-builder /src/web/dist ./web/dist

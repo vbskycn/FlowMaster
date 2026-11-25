@@ -46,6 +46,8 @@ JOIN_HUB_TOKEN=""
 JOIN_NODE_NAME=""
 JOIN_NO_WEB="false"
 JOIN_USE_DOCKER=0
+JOIN_MIRROR_HUB="${FLOWMASTER_MIRROR_HUB:-0}"
+NETWORK_PROBED=0
 
 readonly DEFAULT_GH_PROXIES=(
     "https://gh-proxy.com/"
@@ -180,6 +182,28 @@ detect_network_and_proxy() {
     warn "内置代理节点探测未命中，将依次尝试所有候选节点与官方直连兜底"
 }
 
+ensure_network_probed() {
+    (( NETWORK_PROBED == 1 )) && return 0
+    NETWORK_PROBED=1
+    detect_network_and_proxy
+}
+
+download_hub_dist_file() {
+    local rel_path="$1"
+    local dest_file="$2"
+    local hub_base="${JOIN_HUB_URL%/}"
+    local target_url="${hub_base}/api/v1/cluster/dist/${rel_path}"
+
+    if curl -fL --retry 2 --connect-timeout 6 --max-time 180 \
+        -H "Authorization: Bearer ${JOIN_HUB_TOKEN}" \
+        -o "$dest_file" "$target_url" 2>/dev/null && [[ -s "$dest_file" ]]; then
+        if ! head -c 64 "$dest_file" | grep -qi '<!doctype html\|<html'; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 download_github_file() {
     local raw_url="$1"
     local dest_file="$2"
@@ -221,6 +245,20 @@ resolve_target_version() {
     fi
 
     local ver=""
+    if (( JOIN_MIRROR_HUB == 1 )) && [[ -n "$JOIN_HUB_URL" && -n "$JOIN_HUB_TOKEN" ]]; then
+        local hub_ver_json=""
+        hub_ver_json="$(curl -fsSL --connect-timeout 5 --max-time 10 \
+            -H "Authorization: Bearer ${JOIN_HUB_TOKEN}" \
+            "${JOIN_HUB_URL%/}/api/v1/cluster/dist/version" 2>/dev/null || true)"
+        ver="$(printf '%s' "$hub_ver_json" | sed -n 's/.*"version":[[:space:]]*"v\?\([0-9][0-9.]*\)".*/\1/p' | head -n1)"
+        if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ver"
+            return 0
+        fi
+        warn "从主控机查询分发版本未命中，自动回退 GitHub / 加速源解析..."
+    fi
+
+    ensure_network_probed
     if (( IS_CN_ENV == 0 )); then
         local final_url=""
         final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' --connect-timeout 4 --max-time 8 "https://github.com/${REPO_SLUG}/releases/latest" 2>/dev/null || true)"
@@ -749,8 +787,28 @@ resolve_binary_artifact() {
     sums_path="${TMP_DIR}/SHA256SUMS"
 
     if [[ -n "${FLOWMASTER_DOWNLOAD_URL:-}" ]]; then
+        ensure_network_probed
         download_github_file "$FLOWMASTER_DOWNLOAD_URL" "$archive_path"
+    elif (( JOIN_MIRROR_HUB == 1 )) && [[ -n "$JOIN_HUB_URL" && -n "$JOIN_HUB_TOKEN" ]]; then
+        info "正在从主控机 (${JOIN_HUB_URL%/}) 直接拉取预编译静态二进制包 (v${target_ver}, linux/${arch})..."
+        if download_hub_dist_file "v${target_ver}/SHA256SUMS" "$sums_path" && \
+           download_hub_dist_file "v${target_ver}/${archive_name}" "$archive_path"; then
+            expected_hash="$(awk -v fn="$archive_name" '$2 == fn || $2 == "*"fn { print $1; exit }' "$sums_path")"
+            actual_hash="$(sha256sum "$archive_path" | awk '{print $1}')"
+            if [[ "$expected_hash" =~ ^[0-9a-fA-F]{64}$ && "${expected_hash,,}" == "${actual_hash,,}" ]]; then
+                log "主控分发包 SHA-256 完整性校验通过 (${actual_hash:0:12}...)"
+                tar -xzf "$archive_path" -C "$TMP_DIR"
+                [[ -f "${TMP_DIR}/flowmaster" ]] || fail "解压归档后未找到 flowmaster 可执行文件"
+                install -m 0755 "${TMP_DIR}/flowmaster" "$target_bin"
+                return 0
+            fi
+        fi
+        warn "从主控机拉取安装包未成功，自动回退 GitHub / 加速代理源..."
+        ensure_network_probed
+        info "正在下载预编译静态二进制归档 (v${target_ver}, linux/${arch})..."
+        download_github_file "${base_release_url}/${archive_name}" "$archive_path"
     else
+        ensure_network_probed
         info "正在下载预编译静态二进制归档 (v${target_ver}, linux/${arch})..."
         download_github_file "${base_release_url}/${archive_name}" "$archive_path"
     fi
@@ -978,6 +1036,14 @@ parse_and_run_join() {
                 JOIN_NO_WEB="true"
                 shift
                 ;;
+            --mirror-hub)
+                JOIN_MIRROR_HUB=1
+                shift
+                ;;
+            --github|--no-mirror-hub)
+                JOIN_MIRROR_HUB=0
+                shift
+                ;;
             --docker)
                 JOIN_USE_DOCKER=1
                 shift
@@ -1000,6 +1066,13 @@ interactive_join_prompt() {
     read -r -p "请输入主控中心地址 (例如 http://1.2.3.4:10089 或 https://hub.example.com): " JOIN_HUB_URL
     read -r -p "请输入主控生成的节点 Token (fm_...): " JOIN_HUB_TOKEN
     read -r -p "请输入本机展示名称 (留空自动使用主机名): " JOIN_NODE_NAME
+    local mirror_ans=""
+    read -r -p "是否优先由主控机直接分发安装包（免连 GitHub）[Y/n]: " mirror_ans
+    if [[ "${mirror_ans,,}" == "n" || "${mirror_ans,,}" == "no" ]]; then
+        JOIN_MIRROR_HUB=0
+    else
+        JOIN_MIRROR_HUB=1
+    fi
     [[ -n "$JOIN_HUB_URL" && -n "$JOIN_HUB_TOKEN" ]] || fail "主控地址与节点 Token 不能为空"
     deploy_or_update_binary
 }
@@ -1110,18 +1183,19 @@ main() {
   (无参数)    启动交互式部署与维护菜单
   docker      使用 Docker 部署或平滑更新至最新版本（自动放行防火墙端口）
   binary      使用静态二进制 + systemd 部署或平滑更新至最新版本（自动放行防火墙端口）
-  join        作为被控节点一键安装并接入主控中心:
-              sudo ./install.sh join --hub 'http://主控IP:10089' --token 'fm_...' [--name '节点名'] [--no-web]
-  update      自动识别当前部署方式（Docker 或二进制）并更新至最新版本
-  status      查看当前安装模式、版本号与运行状态
-  uninstall   卸载容器或二进制服务（保留全部流量数据与 /var/lib/vnstat）
+    join        作为被控节点一键安装并接入主控中心:
+                sudo ./install.sh join --hub 'https://主控地址' --token 'fm_...' [--mirror-hub] [--name '节点名'] [--no-web]
+    update      自动识别当前部署方式（Docker 或二进制）并更新至最新版本
+    status      查看当前安装模式、版本号与运行状态
+    uninstall   卸载容器或二进制服务（保留全部流量数据与 /var/lib/vnstat）
 
 可选环境变量:
-  FLOWMASTER_VERSION=v2.1.0           指定安装固定版本（默认 latest）
-  FLOWMASTER_PORT=10089               指定监听端口（默认 10089，IPv4/IPv6 双栈）
-  FLOWMASTER_SKIP_FIREWALL=1          跳过自动放行系统防火墙端口
-  FLOWMASTER_CN=1                     1=强制国内加速模式, 0=强制官方直连
-  FLOWMASTER_GH_PROXY=https://...     自定义 GitHub 代理加速前缀
+    FLOWMASTER_VERSION=v2.2.0           指定安装固定版本（默认 latest）
+    FLOWMASTER_PORT=10089               指定监听端口（默认 10089，IPv4/IPv6 双栈）
+    FLOWMASTER_MIRROR_HUB=1             join 时优先从主控机直接拉取安装包（免连 GitHub）
+    FLOWMASTER_SKIP_FIREWALL=1          跳过自动放行系统防火墙端口
+    FLOWMASTER_CN=1                     1=强制国内加速模式, 0=强制官方直连
+    FLOWMASTER_GH_PROXY=https://...     自定义 GitHub 代理加速前缀
 EOF
         exit 0
     fi
@@ -1130,8 +1204,19 @@ EOF
     ensure_base_tools
     acquire_lock
 
-    if [[ "$action" != "status" && "$action" != "uninstall" && "$action" != "--uninstall" ]]; then
-        detect_network_and_proxy
+    local skip_initial_probe=0
+    if [[ "$action" == "status" || "$action" == "--status" || "$action" == "uninstall" || "$action" == "--uninstall" ]]; then
+        skip_initial_probe=1
+    elif [[ "$action" == "join" || "$action" == "--join" ]]; then
+        local arg
+        for arg in "$@"; do
+            [[ "$arg" == "--mirror-hub" ]] && skip_initial_probe=1
+            [[ "$arg" == "--docker" ]] && skip_initial_probe=0
+        done
+    fi
+
+    if (( skip_initial_probe == 0 )); then
+        ensure_network_probed
     fi
 
     case "$action" in

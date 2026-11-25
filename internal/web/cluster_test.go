@@ -71,13 +71,51 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 		Node struct {
 			ID string `json:"id"`
 		} `json:"node"`
-		Token       string `json:"token"`
-		JoinCommand string `json:"joinCommand"`
+		Token             string `json:"token"`
+		UseHubMirror      bool   `json:"useHubMirror"`
+		JoinCommand       string `json:"joinCommand"`
+		JoinCommandGithub string `json:"joinCommandGithub"`
 	}
 	_ = json.NewDecoder(respCreate.Body).Decode(&createRes)
 	respCreate.Body.Close()
-	if createRes.Node.ID == "" || !strings.HasPrefix(createRes.Token, "fm_") || !strings.Contains(createRes.JoinCommand, "join --hub") {
+	if createRes.Node.ID == "" || !strings.HasPrefix(createRes.Token, "fm_") || !createRes.UseHubMirror {
 		t.Fatalf("unexpected create node response: %+v", createRes)
+	}
+	if !strings.Contains(createRes.JoinCommand, "/api/v1/cluster/dist/install.sh") || !strings.Contains(createRes.JoinCommand, "--mirror-hub") {
+		t.Fatalf("expected default joinCommand to use Hub distribution, got: %s", createRes.JoinCommand)
+	}
+	if !strings.Contains(createRes.JoinCommandGithub, "raw.githubusercontent.com") || strings.Contains(createRes.JoinCommandGithub, "--mirror-hub") {
+		t.Fatalf("expected github fallback joinCommand without --mirror-hub, got: %s", createRes.JoinCommandGithub)
+	}
+
+	// 2b. 验证主控分发端点鉴权保护与内嵌脚本/版本下发
+	unauthDist, err := client.Get(hubTS.URL + "/api/v1/cluster/dist/install.sh")
+	if err != nil || unauthDist.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated dist download, got %v", unauthDist)
+	}
+	unauthDist.Body.Close()
+
+	authScriptResp, err := client.Get(hubTS.URL + "/api/v1/cluster/dist/install.sh?token=" + createRes.Token)
+	if err != nil || authScriptResp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated dist install.sh failed: status=%d err=%v", authScriptResp.StatusCode, err)
+	}
+	authScriptResp.Body.Close()
+
+	reqDistVer, _ := http.NewRequest(http.MethodGet, hubTS.URL+"/api/v1/cluster/dist/version", nil)
+	reqDistVer.Header.Set("Authorization", "Bearer "+createRes.Token)
+	respDistVer, err := client.Do(reqDistVer)
+	if err != nil || respDistVer.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated dist version failed: status=%d err=%v", respDistVer.StatusCode, err)
+	}
+	respDistVer.Body.Close()
+
+	// 2c. 验证 TRUST_PROXY=true 时优先提取 CF-Connecting-IP
+	cfReq, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
+	cfReq.RemoteAddr = "127.0.0.1:45678"
+	cfReq.Header.Set("CF-Connecting-IP", "203.0.113.88")
+	cfReq.Header.Set("X-Forwarded-For", "172.68.1.1")
+	if gotIP := extractClientIP(cfReq, true); gotIP != "203.0.113.88" {
+		t.Fatalf("expected CF-Connecting-IP 203.0.113.88, got %s", gotIP)
 	}
 
 	// 3. 启动一个真实的被控 Agent 实例主动连接 Hub

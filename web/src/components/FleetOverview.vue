@@ -368,9 +368,25 @@
         <template v-if="!createdJoinResult">
           <div class="space-y-3 text-xs">
             <div>
-              <label class="block text-slate-600 dark:text-slate-300 mb-1">主控公网接入地址（供各台被控机主动连接，支持域名、IPv4 或 `[IPv6]:端口`）</label>
-              <input v-model.trim="addForm.hubUrl" type="url" required placeholder="http://主控公网IP或域名:10089" class="w-full px-3 py-2 font-num rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
+              <label class="block text-slate-600 dark:text-slate-300 mb-1">主控公网接入地址（供各台被控机主动连接，支持直连域名、IPv4 或 `[IPv6]:端口`）</label>
+              <input v-model.trim="addForm.hubUrl" type="url" required placeholder="https://hub-direct.example.com 或 http://主控IP:10089" class="w-full px-3 py-2 font-num rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
             </div>
+
+            <label class="flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-colors"
+              :class="addForm.useHubMirror
+                ? 'border-blue-300 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-950/30'
+                : 'border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50'">
+              <input v-model="addForm.useHubMirror" type="checkbox" class="mt-0.5 accent-blue-600 w-4 h-4 shrink-0" />
+              <div class="space-y-0.5">
+                <div class="font-semibold text-slate-800 dark:text-slate-100">
+                  由本主控机直接分发安装脚本与二进制包（默认推荐）
+                </div>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  国内服务器无需访问 GitHub 或依赖第三方公共代理即可秒速拉取安装与后续升级；取消勾选则改从 GitHub 官方或代理加速地址拉取。
+                </p>
+              </div>
+            </label>
+
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="block text-slate-600 dark:text-slate-300 mb-1">服务器显示名称（可选，留空自动取主机名）</label>
@@ -378,7 +394,7 @@
               </div>
               <div>
                 <label class="block text-slate-600 dark:text-slate-300 mb-1">分组标签（可选）</label>
-                <input v-model.trim="addForm.groupName" type="text" placeholder="例如：美国 / 香港 / 欧洲" class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
+                <input v-model.trim="addForm.groupName" type="text" placeholder="例如：美国 / 香港 / 国内" class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950" />
               </div>
             </div>
             <div>
@@ -399,24 +415,29 @@
 
         <template v-else>
           <div class="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs text-emerald-800 dark:text-emerald-300">
-            ✅ 节点记录已创建！复制下方命令到目标服务器执行，脚本将**自动识别国内/海外环境加代理、自动开启本地 10089 面板并放行防火墙、自动连接本主控上线**。
+            ✅ 节点记录已创建！复制下方命令到目标服务器执行，脚本将**{{ resultUseHubMirror ? '直接从本主控机拉取安装包（免连 GitHub）' : '自动从 GitHub 或加速代理拉取安装包' }}、开启本地 10089 面板并放行防火墙、自动连接本主控上线**。
           </div>
+
+          <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer">
+            <input v-model="resultUseHubMirror" type="checkbox" class="accent-blue-600 w-4 h-4" />
+            <span>使用主控机直接分发文件（取消勾选则切换为 GitHub / 代理加速地址分发）</span>
+          </label>
 
           <div class="space-y-2">
             <div class="flex items-center justify-between text-xs">
-              <span class="font-semibold text-slate-700 dark:text-slate-200">默认推荐命令（同时开放本机 10089 面板 + 自动放行防火墙 + 上报主控）</span>
-              <button type="button" class="text-blue-600 hover:underline cursor-pointer" @click="copyCommand(createdJoinResult.joinCommand)">
+              <span class="font-semibold text-slate-700 dark:text-slate-200">默认推荐命令（开放本机 10089 面板 + 自动放行防火墙 + 上报主控）</span>
+              <button type="button" class="text-blue-600 hover:underline cursor-pointer" @click="copyCommand(displayedJoinCommand)">
                 {{ copiedHint || '一键复制命令' }}
               </button>
             </div>
-            <pre class="p-3 rounded-xl bg-slate-950 text-slate-100 font-num text-[11px] whitespace-pre-wrap break-all">{{ createdJoinResult.joinCommand }}</pre>
+            <pre class="p-3 rounded-xl bg-slate-950 text-slate-100 font-num text-[11px] whitespace-pre-wrap break-all">{{ displayedJoinCommand }}</pre>
           </div>
 
           <details class="text-xs">
             <summary class="text-slate-500 cursor-pointer">可选：不开放被控机 10089 端口的纯探针命令 (--no-web)</summary>
             <div class="mt-2 space-y-1.5">
-              <button type="button" class="text-blue-600 hover:underline cursor-pointer" @click="copyCommand(createdJoinResult.joinCommandNoWeb)">复制纯探针命令</button>
-              <pre class="p-3 rounded-xl bg-slate-950 text-slate-100 font-num text-[11px] whitespace-pre-wrap break-all">{{ createdJoinResult.joinCommandNoWeb }}</pre>
+              <button type="button" class="text-blue-600 hover:underline cursor-pointer" @click="copyCommand(displayedJoinCommandNoWeb)">复制纯探针命令</button>
+              <pre class="p-3 rounded-xl bg-slate-950 text-slate-100 font-num text-[11px] whitespace-pre-wrap break-all">{{ displayedJoinCommandNoWeb }}</pre>
             </div>
           </details>
 
@@ -438,7 +459,7 @@
         <div class="flex items-center justify-between">
           <div>
             <h3 class="text-base font-bold text-slate-900 dark:text-white">多节点统一远程升级中心</h3>
-            <p class="text-xs text-slate-500 mt-0.5">被控二进制节点将自动通过国内外加速通道下载目标版本、强制核验 SHA-256 并平滑重启生效。</p>
+            <p class="text-xs text-slate-500 mt-0.5">被控二进制节点将优先从本主控机中转拉取目标版本包（免连 GitHub），失败自动回退加速源、强制核验 SHA-256 并平滑重启生效。</p>
           </div>
           <button type="button" class="text-xs text-slate-400 hover:text-slate-600 cursor-pointer" @click="showUpgradeModal = false">关闭</button>
         </div>
@@ -551,11 +572,29 @@ const creatingNode = ref(false);
 const addError = ref('');
 const copiedHint = ref('');
 const createdJoinResult = ref(null);
+const resultUseHubMirror = ref(true);
 const addForm = reactive({
   hubUrl: '',
   name: '',
   groupName: '',
-  remark: ''
+  remark: '',
+  useHubMirror: true
+});
+
+const displayedJoinCommand = computed(() => {
+  if (!createdJoinResult.value) return '';
+  if (resultUseHubMirror.value) {
+    return createdJoinResult.value.joinCommandHub || createdJoinResult.value.joinCommand;
+  }
+  return createdJoinResult.value.joinCommandGithub || createdJoinResult.value.joinCommand;
+});
+
+const displayedJoinCommandNoWeb = computed(() => {
+  if (!createdJoinResult.value) return '';
+  if (resultUseHubMirror.value) {
+    return createdJoinResult.value.joinCommandHubNoWeb || createdJoinResult.value.joinCommandNoWeb;
+  }
+  return createdJoinResult.value.joinCommandGithubNoWeb || createdJoinResult.value.joinCommandNoWeb;
 });
 
 const showUpgradeModal = ref(false);
@@ -728,6 +767,8 @@ function handleOpenAddModal() {
   addForm.name = '';
   addForm.groupName = '';
   addForm.remark = '';
+  addForm.useHubMirror = true;
+  resultUseHubMirror.value = true;
   showAddModal.value = true;
 }
 
@@ -747,6 +788,7 @@ async function submitCreateNode() {
       body: addForm
     });
     createdJoinResult.value = res;
+    resultUseHubMirror.value = res.useHubMirror !== false;
     emit('refresh');
   } catch (err) {
     addError.value = err.message;

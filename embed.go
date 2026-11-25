@@ -9,6 +9,9 @@ import (
 //go:embed VERSION
 var rawVersionFile string
 
+//go:embed install.sh
+var embeddedInstallScript []byte
+
 //go:embed all:web/dist
 var WebDistFS embed.FS
 
@@ -55,4 +58,9 @@ func AppName() string {
 func AppVersion() string {
 	parseVersionOnce()
 	return appVersion
+}
+
+// InstallScript 返回编译期内嵌的 install.sh 脚本字节内容，供主控节点直接向被控机分发。
+func InstallScript() []byte {
+	return embeddedInstallScript
 }

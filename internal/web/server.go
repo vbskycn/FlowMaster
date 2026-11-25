@@ -217,7 +217,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	window := time.Duration(s.cfg.RateLimitWindowMs) * time.Millisecond
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/api/v1/cluster/agent/") {
+		if !strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/api/v1/cluster/agent/") || strings.HasPrefix(r.URL.Path, "/api/v1/cluster/dist/") {
 			next.ServeHTTP(w, r)
 			return
 		}

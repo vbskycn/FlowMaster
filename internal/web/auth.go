@@ -223,6 +223,9 @@ func writeSessionCookie(w http.ResponseWriter, r *http.Request, token string, ma
 
 func extractClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
+		if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+			return cfIP
+		}
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			first := strings.TrimSpace(strings.Split(xff, ",")[0])
 			if first != "" {

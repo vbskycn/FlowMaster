@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,12 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cluster/agent/heartbeat", s.handleAgentHeartbeat)
 	mux.HandleFunc("GET /api/v1/cluster/agent/poll", s.handleAgentPoll)
 	mux.HandleFunc("POST /api/v1/cluster/agent/reply", s.handleAgentReply)
+
+	// 主控机安装包与脚本中转分发通道（免连 GitHub / 防代理失效，需合法节点 Token 或管理员登录）
+	mux.HandleFunc("GET /api/v1/cluster/dist/install.sh", s.handleClusterDistInstallScript)
+	mux.HandleFunc("GET /api/v1/cluster/dist/version", s.handleClusterDistVersion)
+	mux.HandleFunc("GET /api/v1/cluster/dist/{version}/SHA256SUMS", s.handleClusterDistSums)
+	mux.HandleFunc("GET /api/v1/cluster/dist/{version}/{filename}", s.handleClusterDistArchive)
 
 	// 前台多机总览、横向对比与单机下钻查看接口
 	mux.HandleFunc("GET /api/v1/cluster/nodes", s.requireViewAccess(s.handleListClusterNodes))
@@ -105,16 +112,26 @@ func (s *Server) resolvePublicHubBaseURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
-func buildJoinShellCommand(hubBaseURL, token, name string, noWeb bool) string {
+func buildJoinShellCommand(hubBaseURL, token, name string, noWeb, mirrorHub bool) string {
 	escapedHub := strings.ReplaceAll(hubBaseURL, "'", "")
 	escapedTok := strings.ReplaceAll(token, "'", "")
 	escapedName := strings.ReplaceAll(strings.TrimSpace(name), "'", "")
 	extra := ""
+	if mirrorHub {
+		extra += " --mirror-hub"
+	}
 	if escapedName != "" {
 		extra += fmt.Sprintf(" --name '%s'", escapedName)
 	}
 	if noWeb {
 		extra += " --no-web"
+	}
+	if mirrorHub {
+		return fmt.Sprintf(
+			"curl -fsSL '%s/api/v1/cluster/dist/install.sh?token=%s' -o install.sh && "+
+				"chmod +x install.sh && sudo ./install.sh join --hub '%s' --token '%s'%s",
+			escapedHub, url.QueryEscape(escapedTok), escapedHub, escapedTok, extra,
+		)
 	}
 	return fmt.Sprintf(
 		"curl -fsSL --connect-timeout 5 https://raw.githubusercontent.com/vbskycn/FlowMaster/main/install.sh -o install.sh || "+
@@ -122,6 +139,96 @@ func buildJoinShellCommand(hubBaseURL, token, name string, noWeb bool) string {
 			"chmod +x install.sh && sudo ./install.sh join --hub '%s' --token '%s'%s",
 		escapedHub, escapedTok, extra,
 	)
+}
+
+func (s *Server) requireDistAccess(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := s.hub.AuthenticateAgent(r.Header.Get("Authorization")); ok {
+		return true
+	}
+	if xTok := strings.TrimSpace(r.Header.Get("X-Agent-Token")); xTok != "" {
+		if _, ok := s.hub.AuthenticateAgent("Bearer " + xTok); ok {
+			return true
+		}
+	}
+	if qTok := strings.TrimSpace(r.URL.Query().Get("token")); qTok != "" {
+		if _, ok := s.hub.AuthenticateAgent("Bearer " + qTok); ok {
+			return true
+		}
+	}
+	if authed, _ := s.isAuthenticated(r); authed {
+		return true
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "下载主控分发文件需要有效的节点接入密钥或管理员权限"})
+	return false
+}
+
+func (s *Server) handleClusterDistInstallScript(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDistAccess(w, r) {
+		return
+	}
+	script := flowmaster.InstallScript()
+	if len(script) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "内置安装脚本不可用"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(script)
+}
+
+func (s *Server) handleClusterDistVersion(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDistAccess(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": flowmaster.AppVersion()})
+}
+
+func (s *Server) handleClusterDistSums(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDistAccess(w, r) {
+		return
+	}
+	sums, err := s.updater.ResolveDistSums(r.Context(), r.PathValue("version"))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(sums)
+}
+
+func (s *Server) handleClusterDistArchive(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDistAccess(w, r) {
+		return
+	}
+	fn := strings.TrimSpace(r.PathValue("filename"))
+	var arch string
+	switch fn {
+	case "flowmaster-linux-amd64.tar.gz":
+		arch = "amd64"
+	case "flowmaster-linux-arm64.tar.gz":
+		arch = "arm64"
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "不支持的分发文件名"})
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+
+	data, _, sha256Hex, err := s.updater.ResolveDistArchive(r.Context(), r.PathValue("version"), arch)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Checksum-Sha256", sha256Hex)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleListClusterNodes(w http.ResponseWriter, r *http.Request) {
@@ -277,14 +384,19 @@ func (s *Server) handleClusterNodeQuota(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminCreateNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string `json:"name"`
-		GroupName string `json:"groupName"`
-		Remark    string `json:"remark"`
-		HubURL    string `json:"hubUrl"`
+		Name         string `json:"name"`
+		GroupName    string `json:"groupName"`
+		Remark       string `json:"remark"`
+		HubURL       string `json:"hubUrl"`
+		UseHubMirror *bool  `json:"useHubMirror"`
 	}
 	if err := readJSONBody(r, &req, 16*1024); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
+	}
+	useHubMirror := true
+	if req.UseHubMirror != nil {
+		useHubMirror = *req.UseHubMirror
 	}
 	if len([]rune(req.Name)) > 48 {
 		req.Name = string([]rune(req.Name)[:48])
@@ -313,11 +425,16 @@ func (s *Server) handleAdminCreateNode(w http.ResponseWriter, r *http.Request) {
 	baseURL := s.resolvePublicHubBaseURL(r)
 	s.log.Info("管理员新增了集群受控节点: %s (%s)", rec.Name, rec.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node":             rec,
-		"token":            plainToken,
-		"hubUrl":           baseURL,
-		"joinCommand":      buildJoinShellCommand(baseURL, plainToken, req.Name, false),
-		"joinCommandNoWeb": buildJoinShellCommand(baseURL, plainToken, req.Name, true),
+		"node":                   rec,
+		"token":                  plainToken,
+		"hubUrl":                 baseURL,
+		"useHubMirror":           useHubMirror,
+		"joinCommand":            buildJoinShellCommand(baseURL, plainToken, req.Name, false, useHubMirror),
+		"joinCommandNoWeb":       buildJoinShellCommand(baseURL, plainToken, req.Name, true, useHubMirror),
+		"joinCommandHub":         buildJoinShellCommand(baseURL, plainToken, req.Name, false, true),
+		"joinCommandHubNoWeb":    buildJoinShellCommand(baseURL, plainToken, req.Name, true, true),
+		"joinCommandGithub":      buildJoinShellCommand(baseURL, plainToken, req.Name, false, false),
+		"joinCommandGithubNoWeb": buildJoinShellCommand(baseURL, plainToken, req.Name, true, false),
 	})
 }
 

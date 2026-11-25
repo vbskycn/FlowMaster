@@ -35,7 +35,7 @@ var githubProxyPool = []string{
 	"https://ghproxy.net/",
 }
 
-// Manager 负责检测运行部署形态、查询远程最新 Release 以及执行安全原子自升级。
+// Manager 负责检测运行部署形态、查询远程最新 Release、主控安装包中转缓存以及执行安全原子自升级。
 type Manager struct {
 	log             *logger.Manager
 	repoSlug        string
@@ -43,6 +43,11 @@ type Manager struct {
 	deployMode      string
 	canSelfUpgrade  bool
 	onBeforeRestart func()
+
+	dataDir  string
+	hubURL   string
+	hubToken string
+	distMu   sync.Mutex
 
 	mu             sync.RWMutex
 	state          string // idle | upgrading | restarting | failed
@@ -108,6 +113,17 @@ func checkBinaryWritable(mode string) (string, bool) {
 
 func (m *Manager) DeployMode() string {
 	return m.deployMode
+}
+
+// ConfigureCluster 注入数据目录与可选的被控主控连接参数：
+// - 主控模式下使用 dataDir/dist-cache 缓存并向被控节点分发安装包；
+// - 被控模式下执行远程自升级时优先从已连接的主控节点下载安装包，避免国内机器直连 GitHub 失败。
+func (m *Manager) ConfigureCluster(dataDir, hubURL, hubToken string) {
+	m.mu.Lock()
+	m.dataDir = strings.TrimSpace(dataDir)
+	m.hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	m.hubToken = strings.TrimSpace(hubToken)
+	m.mu.Unlock()
 }
 
 func (m *Manager) CanSelfUpgrade() bool {
@@ -224,30 +240,41 @@ func (m *Manager) runUpgradeWorker(ver string) {
 	defer cancel()
 
 	archiveName := fmt.Sprintf("flowmaster-linux-%s.tar.gz", runtime.GOARCH)
-	baseURL := fmt.Sprintf("https://github.com/%s/releases/download/v%s", m.repoSlug, ver)
 
-	sumsBytes, err := downloadWithFallback(ctx, baseURL+"/SHA256SUMS", 64*1024)
-	if err != nil {
-		m.failUpgrade("下载 SHA256SUMS 校验文件失败: %v", err)
-		return
-	}
-	expectedHash := parseExpectedHash(string(sumsBytes), archiveName)
-	if len(expectedHash) != 64 {
-		m.failUpgrade("未在 SHA256SUMS 中找到 %s 的有效摘要", archiveName)
-		return
-	}
+	var archiveBytes []byte
+	if hubArchive, err := m.tryDownloadUpgradeFromHub(ctx, ver, archiveName); err == nil && len(hubArchive) > 0 {
+		archiveBytes = hubArchive
+		m.log.Info("已通过主控节点分发通道完成升级包 v%s (%s) 下载与 SHA-256 校验", ver, archiveName)
+	} else {
+		if err != nil && m.hubURL != "" {
+			m.log.Warn("从主控分发源拉取升级包未成功 (%v)，正在回退尝试 GitHub 与加速代理源...", err)
+		}
+		baseURL := fmt.Sprintf("https://github.com/%s/releases/download/v%s", m.repoSlug, ver)
 
-	archiveBytes, err := downloadWithFallback(ctx, baseURL+"/"+archiveName, 64*1024*1024)
-	if err != nil {
-		m.failUpgrade("下载升级包 %s 失败: %v", archiveName, err)
-		return
-	}
+		sumsBytes, dErr := downloadWithFallback(ctx, baseURL+"/SHA256SUMS", 64*1024)
+		if dErr != nil {
+			m.failUpgrade("下载 SHA256SUMS 校验文件失败: %v", dErr)
+			return
+		}
+		expectedHash := parseExpectedHash(string(sumsBytes), archiveName)
+		if len(expectedHash) != 64 {
+			m.failUpgrade("未在 SHA256SUMS 中找到 %s 的有效摘要", archiveName)
+			return
+		}
 
-	sum := sha256.Sum256(archiveBytes)
-	actualHash := hex.EncodeToString(sum[:])
-	if !strings.EqualFold(expectedHash, actualHash) {
-		m.failUpgrade("升级包 SHA-256 摘要不匹配，已中止替换")
-		return
+		rawArchive, aErr := downloadWithFallback(ctx, baseURL+"/"+archiveName, 64*1024*1024)
+		if aErr != nil {
+			m.failUpgrade("下载升级包 %s 失败: %v", archiveName, aErr)
+			return
+		}
+
+		sum := sha256.Sum256(rawArchive)
+		actualHash := hex.EncodeToString(sum[:])
+		if !strings.EqualFold(expectedHash, actualHash) {
+			m.failUpgrade("升级包 SHA-256 摘要不匹配，已中止替换")
+			return
+		}
+		archiveBytes = rawArchive
 	}
 
 	binBytes, err := extractBinaryFromTarGz(archiveBytes)
