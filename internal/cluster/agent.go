@@ -106,47 +106,71 @@ func (a *Agent) SendImmediateHeartbeat() {
 func (a *Agent) heartbeatLoop() {
 	defer a.wg.Done()
 	// 启动后立即推送首帧心跳使主控秒级上线
-	_ = a.pushHeartbeatOnce(context.Background())
+	unauthCount := 0
+	if status := a.pushHeartbeatOnce(context.Background()); status == http.StatusUnauthorized {
+		unauthCount = 1
+		a.log.Warn("主控拒绝心跳上报 (HTTP 401，节点可能已在主控移除)，将自动降频至每 60 秒重试")
+	}
 
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	lastUnauthTry := time.Now()
 
 	for {
 		select {
 		case <-a.stopCh:
 			return
 		case <-a.triggerHb:
-			_ = a.pushHeartbeatOnce(context.Background())
+			if unauthCount > 0 && time.Since(lastUnauthTry) < 60*time.Second {
+				continue
+			}
+			if status := a.pushHeartbeatOnce(context.Background()); status == http.StatusUnauthorized {
+				unauthCount++
+				lastUnauthTry = time.Now()
+			} else if status == http.StatusOK {
+				unauthCount = 0
+			}
 		case <-ticker.C:
-			_ = a.pushHeartbeatOnce(context.Background())
+			if unauthCount > 0 && time.Since(lastUnauthTry) < 60*time.Second {
+				continue
+			}
+			if status := a.pushHeartbeatOnce(context.Background()); status == http.StatusUnauthorized {
+				if unauthCount == 0 {
+					a.log.Warn("主控拒绝心跳上报 (HTTP 401，节点可能已在主控移除)，将自动降频至每 60 秒重试")
+				}
+				unauthCount++
+				lastUnauthTry = time.Now()
+			} else if status == http.StatusOK {
+				unauthCount = 0
+			}
 		}
 	}
 }
 
-func (a *Agent) pushHeartbeatOnce(parent context.Context) error {
+func (a *Agent) pushHeartbeatOnce(parent context.Context) int {
 	ctx, cancel := context.WithTimeout(parent, 6*time.Second)
 	defer cancel()
 
 	report := a.buildReport(ctx)
 	body, err := json.Marshal(report)
 	if err != nil {
-		return err
+		return 0
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.HubURL+"/api/v1/cluster/agent/heartbeat", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.cfg.HubToken)
 
 	resp, err := a.hbClient.Do(req)
 	if err != nil {
-		return err
+		return 0
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
 	_ = resp.Body.Close()
-	return nil
+	return resp.StatusCode
 }
 
 func (a *Agent) buildReport(ctx context.Context) model.AgentHeartbeatReport {
@@ -226,12 +250,16 @@ func (a *Agent) longPollLoop() {
 		default:
 		}
 
-		rpcReq, hasCmd, err := a.pollOnce()
+		rpcReq, hasCmd, unauth, err := a.pollOnce()
 		if err != nil {
+			wait := backoff
+			if unauth {
+				wait = 60 * time.Second
+			}
 			select {
 			case <-a.stopCh:
 				return
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
 			backoff = min(15*time.Second, backoff*2)
 			continue
@@ -245,7 +273,7 @@ func (a *Agent) longPollLoop() {
 }
 
 // pollOnce 执行单次长轮询请求，并确保在完整读取并关闭 resp.Body 后才释放请求上下文（避免 HTTP/2 下提前 cancel 截断响应体）。
-func (a *Agent) pollOnce() (model.ClusterRPCRequest, bool, error) {
+func (a *Agent) pollOnce() (model.ClusterRPCRequest, bool, bool, error) {
 	reqCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -261,36 +289,40 @@ func (a *Agent) pollOnce() (model.ClusterRPCRequest, bool, error) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, a.cfg.HubURL+"/api/v1/cluster/agent/poll", nil)
 	if err != nil {
-		return model.ClusterRPCRequest{}, false, err
+		return model.ClusterRPCRequest{}, false, false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.cfg.HubToken)
 
 	resp, err := a.pollClient.Do(req)
 	if err != nil {
-		return model.ClusterRPCRequest{}, false, err
+		return model.ClusterRPCRequest{}, false, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return model.ClusterRPCRequest{}, false, nil
+		return model.ClusterRPCRequest{}, false, false, nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
+		return model.ClusterRPCRequest{}, false, true, errors.New("hub poll unauthorized")
 	}
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
-		return model.ClusterRPCRequest{}, false, errors.New("hub poll returned non-200 status")
+		return model.ClusterRPCRequest{}, false, false, errors.New("hub poll returned non-200 status")
 	}
 
 	raw, rErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if rErr != nil {
 		a.log.Warn("读取主控指令响应体失败: %v", rErr)
-		return model.ClusterRPCRequest{}, false, rErr
+		return model.ClusterRPCRequest{}, false, false, rErr
 	}
 
 	var rpcReq model.ClusterRPCRequest
 	if err := json.Unmarshal(raw, &rpcReq); err != nil {
 		a.log.Warn("解析主控指令 JSON 失败: %v", err)
-		return model.ClusterRPCRequest{}, false, err
+		return model.ClusterRPCRequest{}, false, false, err
 	}
-	return rpcReq, rpcReq.RequestID != "", nil
+	return rpcReq, rpcReq.RequestID != "", false, nil
 }
 
 func (a *Agent) handleRPCRequest(req model.ClusterRPCRequest) {

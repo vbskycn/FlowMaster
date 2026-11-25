@@ -23,9 +23,9 @@
             </div>
           </button>
 
-          <!-- 顶栏一级视图切换：多机总览对比 <-> 单机监控详情 -->
+          <!-- 顶栏一级视图切换：多机总览对比 <-> 单机监控详情（多机模式下访客仅展示只读总览墙，登录后开放单机下钻） -->
           <div
-            v-if="!boot.requireLoginForView || boot.authenticated"
+            v-if="(!boot.requireLoginForView || boot.authenticated) && (boot.authenticated || clusterState.nodes.length <= 1)"
             class="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs"
           >
             <button
@@ -196,12 +196,12 @@
           </div>
 
           <div v-if="currentNicMeta" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 font-num">
-            <span v-if="currentNicMeta.ipv4?.length">IPv4: {{ currentNicMeta.ipv4[0] }}</span>
-            <span v-if="currentNicMeta.ipv6?.length" class="truncate max-w-60" :title="currentNicMeta.ipv6.join(', ')">
+            <span v-if="boot.authenticated && singleNodeDisplayIPv4" :title="singleNodeIPv4Tooltip">IPv4: {{ singleNodeDisplayIPv4 }}</span>
+            <span v-if="boot.authenticated && currentNicMeta.ipv6?.length" class="truncate max-w-60" :title="currentNicMeta.ipv6.join(', ')">
               IPv6: {{ currentNicMeta.ipv6[0] }}
             </span>
             <span v-if="currentNicMeta.speedMbps > 0">{{ currentNicMeta.speedMbps }} Mbps</span>
-            <span v-if="currentNicMeta.mac" class="hidden sm:inline">MAC: {{ currentNicMeta.mac }}</span>
+            <span v-if="boot.authenticated && currentNicMeta.mac" class="hidden sm:inline">MAC: {{ currentNicMeta.mac }}</span>
           </div>
         </section>
 
@@ -636,6 +636,34 @@ let summaryRefreshTimer = null;
 const activeNodeSummary = computed(() => clusterState.nodes.find(n => n.id === activeNodeId.value) || null);
 const currentNicMeta = computed(() => interfaces.value.find(i => i.name === selectedInterface.value) || null);
 
+function isPrivateOrLoopbackIPv4(ip) {
+  if (!ip || ip.includes(':')) return true;
+  if (ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('169.254.')) return true;
+  const m172 = /^172\.(\d+)\./.exec(ip);
+  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true;
+  const m100 = /^100\.(\d+)\./.exec(ip);
+  if (m100 && Number(m100[1]) >= 64 && Number(m100[1]) <= 127) return true;
+  return false;
+}
+
+const singleNodeDisplayIPv4 = computed(() => {
+  const nicIPs = currentNicMeta.value?.ipv4 || [];
+  const publicNic = nicIPs.find(ip => !isPrivateOrLoopbackIPv4(ip));
+  if (publicNic) return publicNic;
+  const ep = activeNodeSummary.value?.endpointIp || '';
+  if (ep && !isPrivateOrLoopbackIPv4(ep)) return ep;
+  return nicIPs[0] || '';
+});
+
+const singleNodeIPv4Tooltip = computed(() => {
+  const pub = singleNodeDisplayIPv4.value;
+  const nicFirst = currentNicMeta.value?.ipv4?.[0] || '';
+  if (pub && nicFirst && pub !== nicFirst) {
+    return `公网 IPv4: ${pub} | 内网网卡: ${nicFirst}`;
+  }
+  return pub;
+});
+
 function goHome() {
   showAdminConsole.value = false;
   editingRemoteNode.value = null;
@@ -822,11 +850,20 @@ async function switchViewMode(mode) {
 }
 
 async function drillIntoNode(nodeId) {
+  if (!boot.authenticated && clusterState.nodes.length > 1) {
+    showAuthModal.value = true;
+    return;
+  }
   activeNodeId.value = nodeId || 'local';
   viewMode.value = 'single';
   selectedInterface.value = '';
   realtimeSamples.value = [];
   Object.assign(latestRealtime, { rxBytesPerSec: 0, txBytesPerSec: 0, rxPacketsPerSec: 0, txPacketsPerSec: 0, timestamp: 0 });
+  Object.assign(todayPoint, { label: '', rxBytes: 0, txBytes: 0, totalBytes: 0 });
+  Object.assign(thisMonthPoint, { label: '', rxBytes: 0, txBytes: 0, totalBytes: 0 });
+  Object.assign(quotaStatus, { enabled: false, usedBytes: 0, limitBytes: 0, remainingBytes: 0, usagePercent: 0, projectedBytes: 0, overWarn: false, overLimit: false });
+  statsResult.points = [];
+  Object.assign(statsResult.summary, { totalRxBytes: 0, totalTxBytes: 0, totalBytes: 0, peakLabel: '', avgBps: 0 });
   await loadSingleNodeDashboard();
 }
 
@@ -922,6 +959,31 @@ function toggleLivePause() {
 
 async function loadTodayAndMonthCards() {
   if (!selectedInterface.value) return;
+  const todayStr = formatLocalDate(new Date());
+  const ymStr = todayStr.slice(0, 7);
+
+  // 查看远程节点主网卡时，直接复用心跳快照中的今日/本月汇总即时渲染，减少 2 次跨国反向 RPC 并发开销
+  const summaryNode = activeNodeSummary.value;
+  if (
+    activeNodeId.value !== 'local' &&
+    summaryNode &&
+    summaryNode.primaryInterface === selectedInterface.value
+  ) {
+    Object.assign(todayPoint, {
+      label: todayStr,
+      rxBytes: summaryNode.todayRxBytes || 0,
+      txBytes: summaryNode.todayTxBytes || 0,
+      totalBytes: summaryNode.todayTotalBytes || 0
+    });
+    Object.assign(thisMonthPoint, {
+      label: ymStr,
+      rxBytes: summaryNode.monthRxBytes || 0,
+      txBytes: summaryNode.monthTxBytes || 0,
+      totalBytes: summaryNode.monthTotalBytes || 0
+    });
+    return;
+  }
+
   const iface = encodeURIComponent(selectedInterface.value);
   const base = nodeApiBase();
   const [dayRes, monthRes] = await Promise.allSettled([
@@ -929,13 +991,11 @@ async function loadTodayAndMonthCards() {
     apiRequest(`${base}/stats/${iface}/m?limit=2`)
   ]);
 
-  const todayStr = formatLocalDate(new Date());
   if (dayRes.status === 'fulfilled') {
     const pts = dayRes.value.points || [];
     const found = pts.find(p => p.label === todayStr) || pts[pts.length - 1];
     Object.assign(todayPoint, found || { label: todayStr, rxBytes: 0, txBytes: 0, totalBytes: 0 });
   }
-  const ymStr = todayStr.slice(0, 7);
   if (monthRes.status === 'fulfilled') {
     const pts = monthRes.value.points || [];
     const found = pts.find(p => p.label === ymStr) || pts[pts.length - 1];
@@ -1061,6 +1121,11 @@ async function onAdminUpdated() {
 
 async function onAdminLoggedOut() {
   showAdminConsole.value = false;
+  if (clusterState.nodes.length > 1) {
+    activeNodeId.value = 'local';
+    viewMode.value = 'fleet';
+    closeRealtimeStream();
+  }
   await initDashboard();
 }
 

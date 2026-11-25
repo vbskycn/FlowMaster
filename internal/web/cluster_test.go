@@ -182,8 +182,40 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 		t.Fatalf("expected agent node %s to report online", createRes.Node.ID)
 	}
 
-	// 4. 验证通过 Hub 下钻读取远程被控节点的按天流量明细（反向长轮询隧道 RPC）
-	respDrill, err := client.Get(hubTS.URL + "/api/v1/cluster/nodes/" + createRes.Node.ID + "/stats/ens3/d")
+	// 4. 验证访客模式下节点敏感 IP/端口已脱敏，且禁止未登录下钻查看远程节点详情；管理员登录后可正常下钻读取
+	guestNodesResp, err := client.Get(hubTS.URL + "/api/v1/cluster/nodes")
+	if err != nil || guestNodesResp.StatusCode != http.StatusOK {
+		t.Fatalf("guest list cluster nodes failed: %v", err)
+	}
+	var guestList struct {
+		PublicHubURL string `json:"publicHubUrl"`
+		Nodes        []struct {
+			ID         string   `json:"id"`
+			EndpointIP string   `json:"endpointIp"`
+			IPv4       []string `json:"ipv4"`
+			PanelPort  int      `json:"panelPort"`
+		} `json:"nodes"`
+	}
+	_ = json.NewDecoder(guestNodesResp.Body).Decode(&guestList)
+	guestNodesResp.Body.Close()
+	if guestList.PublicHubURL != "" {
+		t.Fatalf("expected guest publicHubUrl to be redacted, got %q", guestList.PublicHubURL)
+	}
+	for _, n := range guestList.Nodes {
+		if n.EndpointIP != "" || len(n.IPv4) > 0 || n.PanelPort != 0 {
+			t.Fatalf("expected guest node sensitive fields to be redacted: %+v", n)
+		}
+	}
+
+	guestDrillResp, err := client.Get(hubTS.URL + "/api/v1/cluster/nodes/" + createRes.Node.ID + "/stats/ens3/d")
+	if err != nil || guestDrillResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for guest remote drill-down, got %v", guestDrillResp)
+	}
+	guestDrillResp.Body.Close()
+
+	reqDrill, _ := http.NewRequest(http.MethodGet, hubTS.URL+"/api/v1/cluster/nodes/"+createRes.Node.ID+"/stats/ens3/d", nil)
+	reqDrill.AddCookie(adminCookie)
+	respDrill, err := client.Do(reqDrill)
 	if err != nil || respDrill.StatusCode != http.StatusOK {
 		t.Fatalf("remote drill-down stats failed: status=%d err=%v", respDrill.StatusCode, err)
 	}

@@ -27,13 +27,13 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cluster/dist/{version}/SHA256SUMS", s.handleClusterDistSums)
 	mux.HandleFunc("GET /api/v1/cluster/dist/{version}/{filename}", s.handleClusterDistArchive)
 
-	// 前台多机总览、横向对比与单机下钻查看接口
+	// 前台多机总览接口（访客模式下自动脱敏 IP、MAC、主机名与接入地址）与单机下钻查看接口（仅登录管理员可访问节点详情）
 	mux.HandleFunc("GET /api/v1/cluster/nodes", s.requireViewAccess(s.handleListClusterNodes))
-	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/interfaces", s.requireViewAccess(s.handleClusterNodeInterfaces))
-	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/realtime/{interface}", s.requireViewAccess(s.handleClusterNodeRealtime))
-	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/stats/{interface}/{period}", s.requireViewAccess(s.handleClusterNodeStats))
-	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/stats/{interface}/range/{startDate}/{endDate}", s.requireViewAccess(s.handleClusterNodeRange))
-	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/quota", s.requireViewAccess(s.handleClusterNodeQuota))
+	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/interfaces", s.requireAdmin(s.handleClusterNodeInterfaces))
+	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/realtime/{interface}", s.requireAdmin(s.handleClusterNodeRealtime))
+	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/stats/{interface}/{period}", s.requireAdmin(s.handleClusterNodeStats))
+	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/stats/{interface}/range/{startDate}/{endDate}", s.requireAdmin(s.handleClusterNodeRange))
+	mux.HandleFunc("GET /api/v1/cluster/nodes/{id}/quota", s.requireAdmin(s.handleClusterNodeQuota))
 
 	// 管理后台：节点注册、一键命令生成、远程配额/网卡管理与批量远程升级
 	mux.HandleFunc("POST /api/v1/admin/cluster/nodes", s.requireAdmin(s.handleAdminCreateNode))
@@ -243,10 +243,36 @@ func (s *Server) handleListClusterNodes(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "读取集群节点列表失败"})
 		return
 	}
+
+	authed, _ := s.isAuthenticated(r)
+	publicHubURL := ""
+	if authed {
+		publicHubURL = s.resolvePublicHubBaseURL(r)
+	} else {
+		// 访客模式下严格脱敏所有服务器公私网 IP、MAC、主机名与独立面板端口，避免敏感资产信息暴露
+		for i := range nodes {
+			nodes[i].EndpointIP = ""
+			nodes[i].IPv4 = nil
+			nodes[i].IPv6 = nil
+			nodes[i].Hostname = ""
+			nodes[i].PanelPort = 0
+			if len(nodes[i].Interfaces) > 0 {
+				redactedIfaces := make([]model.InterfaceInfo, len(nodes[i].Interfaces))
+				copy(redactedIfaces, nodes[i].Interfaces)
+				for j := range redactedIfaces {
+					redactedIfaces[j].IPv4 = nil
+					redactedIfaces[j].IPv6 = nil
+					redactedIfaces[j].MAC = ""
+				}
+				nodes[i].Interfaces = redactedIfaces
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hubVersion":           flowmaster.AppVersion(),
 		"latestReleaseVersion": latestVer,
-		"publicHubUrl":         s.resolvePublicHubBaseURL(r),
+		"publicHubUrl":         publicHubURL,
 		"nodes":                nodes,
 	})
 }

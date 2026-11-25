@@ -99,7 +99,7 @@
           <input
             v-model.trim="searchQuery"
             type="text"
-            placeholder="搜索机器名称、IPv4/IPv6、分组或备注..."
+            :placeholder="authenticated ? '搜索机器名称、IPv4/IPv6、分组或备注...' : '搜索机器名称、分组或备注...'"
             class="w-60 px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           />
 
@@ -147,6 +147,7 @@
           </div>
 
           <button
+            v-if="authenticated"
             type="button"
             class="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
             @click="handleOpenAddModal"
@@ -155,6 +156,7 @@
           </button>
 
           <button
+            v-if="authenticated"
             type="button"
             class="px-3.5 py-1.5 rounded-xl text-xs font-medium border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:opacity-90 cursor-pointer"
             @click="handleOpenUpgradeModal"
@@ -179,8 +181,9 @@
                 <div class="flex items-center gap-2">
                   <span class="w-2.5 h-2.5 rounded-full shrink-0" :class="node.online ? 'bg-emerald-500' : 'bg-red-500'"></span>
                   <h3
-                    class="text-sm font-bold text-slate-900 dark:text-white truncate cursor-pointer hover:text-blue-600 dark:hover:text-blue-400"
-                    @click="$emit('select-node', node.id)"
+                    class="text-sm font-bold text-slate-900 dark:text-white truncate"
+                    :class="authenticated ? 'cursor-pointer hover:text-blue-600 dark:hover:text-blue-400' : ''"
+                    @click="authenticated && $emit('select-node', node.id)"
                   >
                     {{ node.name }}
                   </h3>
@@ -188,7 +191,7 @@
                     {{ node.groupName }}
                   </span>
                 </div>
-                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 font-num">
+                <div v-if="authenticated && (primaryIPv4(node) || primaryIPv6(node))" class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 font-num">
                   <span v-if="primaryIPv4(node)" :title="ipv4Tooltip(node)">IPv4: {{ primaryIPv4(node) }}</span>
                   <span v-if="primaryIPv6(node)" class="truncate max-w-44" :title="primaryIPv6(node)">IPv6: {{ primaryIPv6(node) }}</span>
                 </div>
@@ -278,7 +281,7 @@
             <span class="text-[11px] text-slate-400 truncate max-w-44" :title="node.remark">
               {{ node.remark || (node.online ? `运行 ${formatUptime(node.uptimeSeconds)}` : '等待节点连接上报') }}
             </span>
-            <div class="flex items-center gap-2 shrink-0">
+            <div v-if="authenticated" class="flex items-center gap-2 shrink-0">
               <a
                 v-if="!node.isLocal && directPanelUrl(node)"
                 :href="directPanelUrl(node)"
@@ -326,14 +329,14 @@
               <tr>
                 <th class="py-2.5 px-3 w-12 text-center">#</th>
                 <th class="py-2.5 px-3">节点名称 / 分组</th>
-                <th class="py-2.5 px-3">IPv4 / IPv6</th>
+                <th v-if="authenticated" class="py-2.5 px-3">IPv4 / IPv6</th>
                 <th class="py-2.5 px-3">CPU / 内存 / 硬盘</th>
                 <th class="py-2.5 px-3 text-right">实时下行 / 上行</th>
                 <th class="py-2.5 px-3 text-right">今日流量</th>
                 <th class="py-2.5 px-3 text-right">本月流量</th>
                 <th class="py-2.5 px-3">月度配额进度</th>
                 <th class="py-2.5 px-3">版本</th>
-                <th class="py-2.5 px-3 text-right">操作</th>
+                <th v-if="authenticated" class="py-2.5 px-3 text-right">操作</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-200/70 dark:divide-slate-800">
@@ -342,13 +345,19 @@
                 <td class="py-2.5 px-3">
                   <div class="flex items-center gap-1.5">
                     <span class="w-2 h-2 rounded-full" :class="node.online ? 'bg-emerald-500' : 'bg-red-500'"></span>
-                    <button type="button" class="font-bold text-slate-900 dark:text-white hover:text-blue-600 cursor-pointer" @click="$emit('select-node', node.id)">
+                    <button
+                      v-if="authenticated"
+                      type="button"
+                      class="font-bold text-slate-900 dark:text-white hover:text-blue-600 cursor-pointer"
+                      @click="$emit('select-node', node.id)"
+                    >
                       {{ node.name }}
                     </button>
+                    <span v-else class="font-bold text-slate-900 dark:text-white">{{ node.name }}</span>
                   </div>
                   <div v-if="node.groupName" class="text-[11px] text-slate-400 mt-0.5">{{ node.groupName }}</div>
                 </td>
-                <td class="py-2.5 px-3 font-num text-[11px] text-slate-500">
+                <td v-if="authenticated" class="py-2.5 px-3 font-num text-[11px] text-slate-500">
                   <div v-if="primaryIPv4(node)" :title="ipv4Tooltip(node)">{{ primaryIPv4(node) }}</div>
                   <div v-if="primaryIPv6(node)" class="truncate max-w-40" :title="primaryIPv6(node)">{{ primaryIPv6(node) }}</div>
                 </td>
@@ -381,7 +390,17 @@
                     {{ node.version ? `v${node.version}` : '—' }}
                   </span>
                 </td>
-                <td class="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
+                <td v-if="authenticated" class="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
+                  <a
+                    v-if="!node.isLocal && directPanelUrl(node)"
+                    :href="directPanelUrl(node)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-block px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-blue-600"
+                    title="在新标签页打开该机器独立面板"
+                  >
+                    面板 ↗
+                  </a>
                   <button v-if="!node.isLocal" type="button" class="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 cursor-pointer" @click="openNodeConfig(node)">
                     配置
                   </button>
@@ -618,16 +637,35 @@ const compareMetrics = [
   { key: 'month', label: '本月流量对比' },
   { key: 'today', label: '今日流量对比' },
   { key: 'speed', label: '实时带宽对比' },
+  { key: 'hardware', label: 'CPU / 内存(%)' },
   { key: 'quota', label: '配额使用率(%)' }
 ];
 
-const compareMode = ref('month');
+function readPref(key, fallback) {
+  try {
+    const val = localStorage.getItem(key);
+    return val || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+const compareMode = ref(readPref('fm_fleet_compare', 'month'));
 const searchQuery = ref('');
 const selectedGroup = ref('__all__');
-const sortBy = ref('month');
-const displayMode = ref('grid');
-const tablePageSize = ref(20);
+const sortBy = ref(readPref('fm_fleet_sort', 'month'));
+const displayMode = ref(readPref('fm_fleet_display', 'grid'));
+const tablePageSize = ref(Number(readPref('fm_fleet_pagesize', '20')) || 20);
 const tablePage = ref(1);
+
+watch([compareMode, sortBy, displayMode, tablePageSize], () => {
+  try {
+    localStorage.setItem('fm_fleet_compare', compareMode.value);
+    localStorage.setItem('fm_fleet_sort', sortBy.value);
+    localStorage.setItem('fm_fleet_display', displayMode.value);
+    localStorage.setItem('fm_fleet_pagesize', String(tablePageSize.value));
+  } catch (_) {}
+});
 
 const showAddModal = ref(false);
 const creatingNode = ref(false);
@@ -773,6 +811,17 @@ const compareChart = computed(() => {
       txLabel: '实时上行',
       rx: top.map(n => Number((isBytes ? (n.rxBytesPerSec || 0) / (1024 * 1024) : ((n.rxBytesPerSec || 0) * 8) / 1_000_000).toFixed(2))),
       tx: top.map(n => Number((isBytes ? (n.txBytesPerSec || 0) / (1024 * 1024) : ((n.txBytesPerSec || 0) * 8) / 1_000_000).toFixed(2)))
+    };
+  }
+
+  if (compareMode.value === 'hardware') {
+    return {
+      labels,
+      unit: '%',
+      rxLabel: 'CPU 占用',
+      txLabel: '内存占用',
+      rx: top.map(n => Number((n.host?.cpuPercent || 0).toFixed(1))),
+      tx: top.map(n => Number((n.host?.memPercent || 0).toFixed(1)))
     };
   }
 

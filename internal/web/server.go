@@ -517,6 +517,13 @@ func (s *Server) handleV1Interfaces(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "无法读取可用网络接口"})
 		return
 	}
+	if authed, _ := s.isAuthenticated(r); !authed {
+		for i := range list {
+			list[i].IPv4 = nil
+			list[i].IPv6 = nil
+			list[i].MAC = ""
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"interfaces": list})
 }
 
@@ -546,6 +553,13 @@ func (s *Server) handleV1RealtimeStream(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "不支持流式响应"})
 		return
 	}
+	isRemote := nodeID != "" && nodeID != "local"
+	if isRemote {
+		if authed, _ := s.isAuthenticated(r); !authed {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "请先登录后查看远程节点实时流"})
+			return
+		}
+	}
 	// 长连接 SSE 流取消固定写超时，防止长流正常推送被服务端超时断开。
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -555,7 +569,6 @@ func (s *Server) handleV1RealtimeStream(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	isRemote := nodeID != "" && nodeID != "local"
 	if isRemote {
 		if hist, _, err := s.hub.GetRemoteRealtimeHistory(nodeID, iface); err == nil {
 			initPayload, _ := json.Marshal(map[string]any{"type": "init", "history": hist})
