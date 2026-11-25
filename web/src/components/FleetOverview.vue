@@ -745,15 +745,45 @@ function primaryIPv6(node) {
   return '';
 }
 
+function isLoopbackOrPrivateIP(ip) {
+  if (!ip) return true;
+  const s = String(ip).trim().toLowerCase();
+  if (s === '::1' || s.startsWith('127.') || s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('169.254.') || s.startsWith('fe80:')) {
+    return true;
+  }
+  const m172 = /^172\.(\d+)\./.exec(s);
+  if (m172) {
+    const second = Number(m172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  const m100 = /^100\.(\d+)\./.exec(s);
+  if (m100) {
+    const second = Number(m100[1]);
+    if (second >= 64 && second <= 127) return true;
+  }
+  return false;
+}
+
 function directPanelUrl(node) {
   if (!node.panelPort) return '';
-  const v4 = primaryIPv4(node);
-  if (v4 && !v4.startsWith('10.') && !v4.startsWith('172.') && !v4.startsWith('192.168.')) {
-    return `http://${v4}:${node.panelPort}`;
+  const publicV4 = (node.ipv4 || []).find(ip => !isLoopbackOrPrivateIP(ip));
+  if (publicV4) {
+    return `http://${publicV4}:${node.panelPort}`;
   }
-  const ep = node.endpointIp || v4 || primaryIPv6(node);
-  if (!ep) return '';
-  return ep.includes(':') ? `http://[${ep}]:${node.panelPort}` : `http://${ep}:${node.panelPort}`;
+  if (node.endpointIp && !isLoopbackOrPrivateIP(node.endpointIp)) {
+    return node.endpointIp.includes(':')
+      ? `http://[${node.endpointIp}]:${node.panelPort}`
+      : `http://${node.endpointIp}:${node.panelPort}`;
+  }
+  const publicV6 = (node.ipv6 || []).find(ip => !isLoopbackOrPrivateIP(ip));
+  if (publicV6) {
+    return `http://[${publicV6}]:${node.panelPort}`;
+  }
+  const fallbackV4 = (node.ipv4 || []).find(ip => ip && !ip.startsWith('127.'));
+  if (fallbackV4) {
+    return `http://${fallbackV4}:${node.panelPort}`;
+  }
+  return '';
 }
 
 function handleOpenAddModal() {

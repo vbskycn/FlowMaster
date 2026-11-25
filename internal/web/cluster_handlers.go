@@ -66,7 +66,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	remoteIP := extractClientIP(r, s.cfg.TrustProxy)
+	remoteIP := extractAgentEndpointIP(r, s.cfg.TrustProxy)
 	s.hub.IngestHeartbeat(rec, remoteIP, report)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

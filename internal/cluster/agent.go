@@ -223,29 +223,7 @@ func (a *Agent) longPollLoop() {
 		default:
 		}
 
-		reqCtx, cancel := context.WithCancel(context.Background())
-		stopWatch := make(chan struct{})
-		go func() {
-			select {
-			case <-a.stopCh:
-				cancel()
-			case <-stopWatch:
-			}
-		}()
-
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, a.cfg.HubURL+"/api/v1/cluster/agent/poll", nil)
-		if err != nil {
-			close(stopWatch)
-			cancel()
-			time.Sleep(3 * time.Second)
-			continue
-		}
-		req.Header.Set("Authorization", "Bearer "+a.cfg.HubToken)
-
-		resp, err := a.pollClient.Do(req)
-		close(stopWatch)
-		cancel()
-
+		rpcReq, hasCmd, err := a.pollOnce()
 		if err != nil {
 			select {
 			case <-a.stopCh:
@@ -257,28 +235,59 @@ func (a *Agent) longPollLoop() {
 		}
 
 		backoff = time.Second
-		if resp.StatusCode == http.StatusNoContent {
-			_ = resp.Body.Close()
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
-			_ = resp.Body.Close()
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		raw, rErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-		_ = resp.Body.Close()
-		if rErr != nil {
-			continue
-		}
-
-		var rpcReq model.ClusterRPCRequest
-		if json.Unmarshal(raw, &rpcReq) == nil && rpcReq.RequestID != "" {
+		if hasCmd && rpcReq.RequestID != "" {
 			go a.handleRPCRequest(rpcReq)
 		}
 	}
+}
+
+// pollOnce 执行单次长轮询请求，并确保在完整读取并关闭 resp.Body 后才释放请求上下文（避免 HTTP/2 下提前 cancel 截断响应体）。
+func (a *Agent) pollOnce() (model.ClusterRPCRequest, bool, error) {
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-a.stopCh:
+			cancel()
+		case <-stopWatch:
+		}
+	}()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, a.cfg.HubURL+"/api/v1/cluster/agent/poll", nil)
+	if err != nil {
+		return model.ClusterRPCRequest{}, false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.cfg.HubToken)
+
+	resp, err := a.pollClient.Do(req)
+	if err != nil {
+		return model.ClusterRPCRequest{}, false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return model.ClusterRPCRequest{}, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
+		return model.ClusterRPCRequest{}, false, errors.New("hub poll returned non-200 status")
+	}
+
+	raw, rErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if rErr != nil {
+		a.log.Warn("读取主控指令响应体失败: %v", rErr)
+		return model.ClusterRPCRequest{}, false, rErr
+	}
+
+	var rpcReq model.ClusterRPCRequest
+	if err := json.Unmarshal(raw, &rpcReq); err != nil {
+		a.log.Warn("解析主控指令 JSON 失败: %v", err)
+		return model.ClusterRPCRequest{}, false, err
+	}
+	return rpcReq, rpcReq.RequestID != "", nil
 }
 
 func (a *Agent) handleRPCRequest(req model.ClusterRPCRequest) {
@@ -300,9 +309,15 @@ func (a *Agent) handleRPCRequest(req model.ClusterRPCRequest) {
 	if rErr == nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+a.cfg.HubToken)
-		if resp, dErr := a.hbClient.Do(httpReq); dErr == nil {
+		resp, dErr := a.hbClient.Do(httpReq)
+		if dErr != nil {
+			a.log.Warn("回传主控指令结果失败 (%s): %v", req.Action, dErr)
+		} else {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8*1024))
 			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				a.log.Warn("主控拒绝指令回传 (%s): HTTP %d", req.Action, resp.StatusCode)
+			}
 		}
 	}
 

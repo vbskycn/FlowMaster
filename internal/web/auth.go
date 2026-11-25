@@ -223,17 +223,8 @@ func writeSessionCookie(w http.ResponseWriter, r *http.Request, token string, ma
 
 func extractClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
-		if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
-			return cfIP
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first := strings.TrimSpace(strings.Split(xff, ",")[0])
-			if first != "" {
-				return first
-			}
-		}
-		if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-			return xri
+		if ip := extractForwardedIP(r); ip != "" {
+			return ip
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -241,6 +232,39 @@ func extractClientIP(r *http.Request, trustProxy bool) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// extractAgentEndpointIP 提取被控节点上报的真实出口公网 IP：
+// 当开启 TRUST_PROXY 或连接直接来自本机回环反向代理（127.0.0.1 / ::1）时，自动读取反代透传的真实 IP，
+// 避免用户在宝塔/Nginx 反代后忘记开启 TRUST_PROXY 导致“独立面板”跳转链接变成 127.0.0.1:10089。
+func extractAgentEndpointIP(r *http.Request, trustProxy bool) string {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		peer = host
+	}
+	parsedPeer := net.ParseIP(strings.Trim(peer, "[]"))
+	if trustProxy || (parsedPeer != nil && parsedPeer.IsLoopback()) {
+		if ip := extractForwardedIP(r); ip != "" {
+			return ip
+		}
+	}
+	return peer
+}
+
+func extractForwardedIP(r *http.Request) string {
+	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+		return cfIP
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if first != "" {
+			return first
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	return ""
 }
 
 func timingSafeEqualStr(expected, provided string) bool {

@@ -109,13 +109,19 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	}
 	respDistVer.Body.Close()
 
-	// 2c. 验证 TRUST_PROXY=true 时优先提取 CF-Connecting-IP
+	// 2c. 验证 TRUST_PROXY=true 时优先提取 CF-Connecting-IP，且本机回环反代下即使 TRUST_PROXY=false 也能准确提取节点真实出口 IP
 	cfReq, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
 	cfReq.RemoteAddr = "127.0.0.1:45678"
 	cfReq.Header.Set("CF-Connecting-IP", "203.0.113.88")
 	cfReq.Header.Set("X-Forwarded-For", "172.68.1.1")
 	if gotIP := extractClientIP(cfReq, true); gotIP != "203.0.113.88" {
 		t.Fatalf("expected CF-Connecting-IP 203.0.113.88, got %s", gotIP)
+	}
+	loopbackProxyReq, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:10089/api/v1/cluster/agent/heartbeat", nil)
+	loopbackProxyReq.RemoteAddr = "127.0.0.1:51234"
+	loopbackProxyReq.Header.Set("X-Real-IP", "158.178.205.137")
+	if gotEP := extractAgentEndpointIP(loopbackProxyReq, false); gotEP != "158.178.205.137" {
+		t.Fatalf("expected loopback proxy endpoint IP 158.178.205.137, got %s", gotEP)
 	}
 
 	// 3. 启动一个真实的被控 Agent 实例主动连接 Hub
