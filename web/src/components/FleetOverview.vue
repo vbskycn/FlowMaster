@@ -120,6 +120,8 @@
             <option value="today">按今日总流量排序</option>
             <option value="speed">按当前实时网速排序</option>
             <option value="quota">按月度配额使用率排序</option>
+            <option value="cpu">按 CPU 使用率排序</option>
+            <option value="mem">按内存使用率排序</option>
             <option value="name">按机器名称排序</option>
           </select>
         </div>
@@ -219,6 +221,40 @@
               </div>
             </div>
 
+            <!-- CPU / 内存 / 硬盘 实时资源占用条 -->
+            <div
+              v-if="hasHostMetrics(node)"
+              class="mt-2.5 grid grid-cols-3 gap-2 px-2.5 py-2 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/60 dark:border-slate-800/80 text-[11px] font-num"
+            >
+              <div :title="`CPU 占用 ${(node.host.cpuPercent || 0).toFixed(1)}% (${node.host.cpuCores || 0} 核)`">
+                <div class="flex items-center justify-between text-slate-500">
+                  <span class="font-sans">CPU</span>
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">{{ (node.host.cpuPercent || 0).toFixed(0) }}%</span>
+                </div>
+                <div class="mt-1 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                  <div class="h-full rounded-full transition-all" :class="meterBarClass(node.host.cpuPercent)" :style="{ width: Math.min(100, node.host.cpuPercent || 0) + '%' }"></div>
+                </div>
+              </div>
+              <div :title="`内存: ${formatBytes(node.host.memUsedBytes)} / ${formatBytes(node.host.memTotalBytes)}`">
+                <div class="flex items-center justify-between text-slate-500">
+                  <span class="font-sans">内存</span>
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">{{ (node.host.memPercent || 0).toFixed(0) }}%</span>
+                </div>
+                <div class="mt-1 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                  <div class="h-full rounded-full transition-all" :class="meterBarClass(node.host.memPercent)" :style="{ width: Math.min(100, node.host.memPercent || 0) + '%' }"></div>
+                </div>
+              </div>
+              <div :title="`硬盘 (/): ${formatBytes(node.host.diskUsedBytes)} / ${formatBytes(node.host.diskTotalBytes)}`">
+                <div class="flex items-center justify-between text-slate-500">
+                  <span class="font-sans">硬盘</span>
+                  <span class="font-semibold text-slate-700 dark:text-slate-200">{{ (node.host.diskPercent || 0).toFixed(0) }}%</span>
+                </div>
+                <div class="mt-1 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                  <div class="h-full rounded-full transition-all" :class="meterBarClass(node.host.diskPercent)" :style="{ width: Math.min(100, node.host.diskPercent || 0) + '%' }"></div>
+                </div>
+              </div>
+            </div>
+
             <!-- 月度配额进度条（若该机器启用了配额） -->
             <div v-if="node.quota?.enabled && node.quota?.limitBytes > 0" class="mt-2.5 space-y-1">
               <div class="flex items-center justify-between text-[11px] font-num">
@@ -291,6 +327,7 @@
                 <th class="py-2.5 px-3 w-12 text-center">#</th>
                 <th class="py-2.5 px-3">节点名称 / 分组</th>
                 <th class="py-2.5 px-3">IPv4 / IPv6</th>
+                <th class="py-2.5 px-3">CPU / 内存 / 硬盘</th>
                 <th class="py-2.5 px-3 text-right">实时下行 / 上行</th>
                 <th class="py-2.5 px-3 text-right">今日流量</th>
                 <th class="py-2.5 px-3 text-right">本月流量</th>
@@ -314,6 +351,18 @@
                 <td class="py-2.5 px-3 font-num text-[11px] text-slate-500">
                   <div v-if="primaryIPv4(node)" :title="ipv4Tooltip(node)">{{ primaryIPv4(node) }}</div>
                   <div v-if="primaryIPv6(node)" class="truncate max-w-40" :title="primaryIPv6(node)">{{ primaryIPv6(node) }}</div>
+                </td>
+                <td class="py-2.5 px-3 font-num text-[11px] whitespace-nowrap">
+                  <template v-if="hasHostMetrics(node)">
+                    <div class="flex items-center gap-1.5">
+                      <span :title="`${node.host.cpuCores || 0} 核`" :class="meterTextClass(node.host.cpuPercent)">CPU {{ (node.host.cpuPercent || 0).toFixed(0) }}%</span>
+                      <span class="text-slate-300 dark:text-slate-700">|</span>
+                      <span :title="`${formatBytes(node.host.memUsedBytes)} / ${formatBytes(node.host.memTotalBytes)}`" :class="meterTextClass(node.host.memPercent)">内 {{ (node.host.memPercent || 0).toFixed(0) }}%</span>
+                      <span class="text-slate-300 dark:text-slate-700">|</span>
+                      <span :title="`${formatBytes(node.host.diskUsedBytes)} / ${formatBytes(node.host.diskTotalBytes)}`" :class="meterTextClass(node.host.diskPercent)">盘 {{ (node.host.diskPercent || 0).toFixed(0) }}%</span>
+                    </div>
+                  </template>
+                  <span v-else class="text-slate-400">—</span>
                 </td>
                 <td class="py-2.5 px-3 text-right font-num whitespace-nowrap">
                   <div class="text-blue-600 dark:text-blue-400">↓ {{ formatRate(node.rxBytesPerSec, rateMode) }}</div>
@@ -692,6 +741,10 @@ const filteredNodes = computed(() => {
         return ((b.rxBytesPerSec || 0) + (b.txBytesPerSec || 0)) - ((a.rxBytesPerSec || 0) + (a.txBytesPerSec || 0));
       case 'quota':
         return (b.quota?.usagePercent || 0) - (a.quota?.usagePercent || 0);
+      case 'cpu':
+        return (b.host?.cpuPercent || 0) - (a.host?.cpuPercent || 0);
+      case 'mem':
+        return (b.host?.memPercent || 0) - (a.host?.memPercent || 0);
       case 'name':
         return String(a.name || '').localeCompare(String(b.name || ''));
       default:
@@ -778,6 +831,24 @@ function primaryIPv6(node) {
     return node.endpointIp;
   }
   return '';
+}
+
+function hasHostMetrics(node) {
+  return Boolean(node?.host && (node.host.memTotalBytes > 0 || node.host.diskTotalBytes > 0 || node.host.cpuCores > 0));
+}
+
+function meterBarClass(pct) {
+  const v = Number(pct || 0);
+  if (v >= 90) return 'bg-red-500';
+  if (v >= 75) return 'bg-amber-500';
+  return 'bg-blue-600 dark:bg-blue-500';
+}
+
+function meterTextClass(pct) {
+  const v = Number(pct || 0);
+  if (v >= 90) return 'text-red-600 dark:text-red-400 font-semibold';
+  if (v >= 75) return 'text-amber-600 dark:text-amber-400 font-semibold';
+  return 'text-slate-600 dark:text-slate-300';
 }
 
 function isLoopbackOrPrivateIP(ip) {

@@ -217,6 +217,18 @@ type ClusterNodeRecord struct {
 	Arch      string `json:"arch"`
 }
 
+// HostMetrics 表示主机的 CPU、内存与根分区硬盘实时占用情况。
+type HostMetrics struct {
+	CPUPercent     float64 `json:"cpuPercent"`
+	CPUCores       int     `json:"cpuCores"`
+	MemUsedBytes   uint64  `json:"memUsedBytes"`
+	MemTotalBytes  uint64  `json:"memTotalBytes"`
+	MemPercent     float64 `json:"memPercent"`
+	DiskUsedBytes  uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes uint64  `json:"diskTotalBytes"`
+	DiskPercent    float64 `json:"diskPercent"`
+}
+
 // AgentHeartbeatReport 为被控节点每 3 秒上报给主控中心的实时快照。
 type AgentHeartbeatReport struct {
 	NodeName         string                      `json:"nodeName,omitempty"`
@@ -228,6 +240,7 @@ type AgentHeartbeatReport struct {
 	CanSelfUpgrade   bool                        `json:"canSelfUpgrade"`
 	UptimeSeconds    int64                       `json:"uptimeSeconds"`
 	PanelPort        int                         `json:"panelPort"`
+	Host             HostMetrics                 `json:"host"`
 	PrimaryInterface string                      `json:"primaryInterface"`
 	Interfaces       []InterfaceInfo             `json:"interfaces"`
 	RealtimeByIface  map[string]RealtimeSample   `json:"realtimeByIface"`
@@ -264,6 +277,7 @@ type ClusterNodeSummary struct {
 	UpgradeState     string          `json:"upgradeState"`
 	UpgradeMessage   string          `json:"upgradeMessage"`
 	UptimeSeconds    int64           `json:"uptimeSeconds"`
+	Host             HostMetrics     `json:"host"`
 	PrimaryInterface string          `json:"primaryInterface"`
 	Interfaces       []InterfaceInfo `json:"interfaces"`
 	RxBytesPerSec    float64         `json:"rxBytesPerSec"`

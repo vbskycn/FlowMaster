@@ -205,6 +205,63 @@
           </div>
         </section>
 
+        <!-- 主机 CPU / 内存 / 硬盘实时负载条 -->
+        <section
+          v-if="activeNodeSummary?.host && (activeNodeSummary.host.memTotalBytes > 0 || activeNodeSummary.host.diskTotalBytes > 0)"
+          class="grid grid-cols-1 sm:grid-cols-3 gap-3.5"
+        >
+          <div class="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-500 dark:text-slate-400">CPU 负载</span>
+              <span class="font-num font-bold text-slate-800 dark:text-slate-100">
+                {{ (activeNodeSummary.host.cpuPercent || 0).toFixed(1) }}%
+                <span class="font-normal text-slate-400">({{ activeNodeSummary.host.cpuCores || 0 }} 核)</span>
+              </span>
+            </div>
+            <div class="mt-2 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-300"
+                :class="(activeNodeSummary.host.cpuPercent || 0) >= 90 ? 'bg-red-500' : ((activeNodeSummary.host.cpuPercent || 0) >= 75 ? 'bg-amber-500' : 'bg-blue-600')"
+                :style="{ width: Math.min(100, activeNodeSummary.host.cpuPercent || 0) + '%' }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-500 dark:text-slate-400">内存占用</span>
+              <span class="font-num font-bold text-slate-800 dark:text-slate-100">
+                {{ formatBytes(activeNodeSummary.host.memUsedBytes) }} / {{ formatBytes(activeNodeSummary.host.memTotalBytes) }}
+                <span class="font-normal text-slate-400">({{ (activeNodeSummary.host.memPercent || 0).toFixed(1) }}%)</span>
+              </span>
+            </div>
+            <div class="mt-2 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-300"
+                :class="(activeNodeSummary.host.memPercent || 0) >= 90 ? 'bg-red-500' : ((activeNodeSummary.host.memPercent || 0) >= 75 ? 'bg-amber-500' : 'bg-emerald-500')"
+                :style="{ width: Math.min(100, activeNodeSummary.host.memPercent || 0) + '%' }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-500 dark:text-slate-400">硬盘空间 (/)</span>
+              <span class="font-num font-bold text-slate-800 dark:text-slate-100">
+                {{ formatBytes(activeNodeSummary.host.diskUsedBytes) }} / {{ formatBytes(activeNodeSummary.host.diskTotalBytes) }}
+                <span class="font-normal text-slate-400">({{ (activeNodeSummary.host.diskPercent || 0).toFixed(1) }}%)</span>
+              </span>
+            </div>
+            <div class="mt-2 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-300"
+                :class="(activeNodeSummary.host.diskPercent || 0) >= 90 ? 'bg-red-500' : ((activeNodeSummary.host.diskPercent || 0) >= 75 ? 'bg-amber-500' : 'bg-indigo-500')"
+                :style="{ width: Math.min(100, activeNodeSummary.host.diskPercent || 0) + '%' }"
+              ></div>
+            </div>
+          </div>
+        </section>
+
         <!-- 核心指标 4 宫格卡片 -->
         <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div class="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs">

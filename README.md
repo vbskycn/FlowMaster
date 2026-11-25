@@ -131,8 +131,8 @@ location ^~ /
 ## 手动 Docker 部署与升级
 
 官方同步发布 `linux/amd64` 与 `linux/arm64` 多架构镜像：
-- **Docker Hub**：`zhoujie218/flowmaster:2.2.2`（及 `zhoujie218/flowmaster:latest`）
-- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.2.2`（及 `ghcr.io/vbskycn/flowmaster:latest`）
+- **Docker Hub**：`zhoujie218/flowmaster:2.3.0`（及 `zhoujie218/flowmaster:latest`）
+- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.3.0`（及 `ghcr.io/vbskycn/flowmaster:latest`）
 
 ### `docker run` 部署（默认双栈 IPv4/IPv6）
 
@@ -147,7 +147,7 @@ docker run -d \
   -e HOST=:: \
   -e PORT=10089 \
   -v /opt/flowmaster/data:/data \
-  zhoujie218/flowmaster:2.2.2
+  zhoujie218/flowmaster:2.3.0
 ```
 
 > **提示**：
@@ -162,7 +162,7 @@ docker run -d \
 docker compose up -d
 
 # 升级版本（建议升级前先在管理后台下载一份备份快照）
-docker pull zhoujie218/flowmaster:2.2.2
+docker pull zhoujie218/flowmaster:2.3.0
 docker compose up -d
 ```
 

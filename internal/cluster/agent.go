@@ -29,10 +29,11 @@ type Agent struct {
 	cfg       *config.Config
 	store     *store.Store
 	engine    *collector.Engine
-	quotaSvc  *quota.Service
-	updater   *updater.Manager
-	log       *logger.Manager
-	startedAt time.Time
+	quotaSvc    *quota.Service
+	updater     *updater.Manager
+	hostSampler *collector.HostMetricsSampler
+	log         *logger.Manager
+	startedAt   time.Time
 
 	hbClient   *http.Client
 	pollClient *http.Client
@@ -55,9 +56,10 @@ func NewAgent(
 		cfg:        cfg,
 		store:      st,
 		engine:     eng,
-		quotaSvc:   qs,
-		updater:    up,
-		log:        log,
+		quotaSvc:    qs,
+		updater:     up,
+		hostSampler: collector.NewHostMetricsSampler(),
+		log:         log,
 		startedAt:  time.Now(),
 		hbClient:   &http.Client{Timeout: 8 * time.Second},
 		pollClient: &http.Client{Timeout: 35 * time.Second},
@@ -199,6 +201,7 @@ func (a *Agent) buildReport(ctx context.Context) model.AgentHeartbeatReport {
 		CanSelfUpgrade:   a.updater.CanSelfUpgrade(),
 		UptimeSeconds:    int64(time.Since(a.startedAt).Seconds()),
 		PanelPort:        panelPort,
+		Host:             a.hostSampler.Sample(),
 		PrimaryInterface: primary,
 		Interfaces:       ifaces,
 		RealtimeByIface:  rtMap,

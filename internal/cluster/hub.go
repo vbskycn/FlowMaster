@@ -47,10 +47,11 @@ type Hub struct {
 	cfg       *config.Config
 	store     *store.Store
 	engine    *collector.Engine
-	quotaSvc  *quota.Service
-	updater   *updater.Manager
-	log       *logger.Manager
-	startedAt time.Time
+	quotaSvc    *quota.Service
+	updater     *updater.Manager
+	hostSampler *collector.HostMetricsSampler
+	log         *logger.Manager
+	startedAt   time.Time
 
 	mu              sync.RWMutex
 	sessions        map[string]*liveNodeSession
@@ -72,9 +73,10 @@ func NewHub(
 		cfg:       cfg,
 		store:     st,
 		engine:    eng,
-		quotaSvc:  qs,
-		updater:   up,
-		log:       log,
+		quotaSvc:    qs,
+		updater:     up,
+		hostSampler: collector.NewHostMetricsSampler(),
+		log:         log,
 		startedAt: time.Now(),
 		sessions:  make(map[string]*liveNodeSession),
 		pending:   make(map[string]chan model.ClusterRPCResponse),
@@ -449,6 +451,7 @@ func (h *Hub) ListNodeSummaries(ctx context.Context, targetLatestVer string) ([]
 			sum.UpgradeMessage = rep.UpgradeMessage
 			sum.UptimeSeconds = rep.UptimeSeconds
 			sum.PanelPort = rep.PanelPort
+			sum.Host = rep.Host
 			sum.PrimaryInterface = rep.PrimaryInterface
 			sum.Interfaces = rep.Interfaces
 			sum.IPv4, sum.IPv6 = collectUniqueIPs(rep.Interfaces)
@@ -549,6 +552,7 @@ func (h *Hub) buildLocalSummary(ctx context.Context, targetLatestVer string) mod
 		UpgradeState:     upState,
 		UpgradeMessage:   upMsg,
 		UptimeSeconds:    int64(time.Since(h.startedAt).Seconds()),
+		Host:             h.hostSampler.Sample(),
 		PrimaryInterface: primary,
 		Interfaces:       ifaces,
 		RxBytesPerSec:    rxBps,

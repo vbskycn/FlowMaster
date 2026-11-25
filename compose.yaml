@@ -1,7 +1,7 @@
 services:
   flowmaster:
-    # 官方多架构镜像 (linux/amd64, linux/arm64)；也可替换为 ghcr.io/vbskycn/flowmaster:2.2.2
-    image: zhoujie218/flowmaster:2.2.2
+    # 官方多架构镜像 (linux/amd64, linux/arm64)；也可替换为 ghcr.io/vbskycn/flowmaster:2.3.0
+    image: zhoujie218/flowmaster:2.3.0
     container_name: flowmaster
     restart: unless-stopped
     # 使用 host 网络模式以便零开销读取宿主机真实物理网卡 (/proc/net/dev)
