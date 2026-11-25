@@ -23,10 +23,12 @@ import (
 func main() {
 	var (
 		showVersion bool
+		healthcheck bool
 		envFile     string
 	)
 	flag.BoolVar(&showVersion, "version", false, "显示版本号并退出")
 	flag.BoolVar(&showVersion, "v", false, "显示版本号并退出 (简写)")
+	flag.BoolVar(&healthcheck, "healthcheck", false, "执行本机 HTTP 健康检查并退出")
 	flag.StringVar(&envFile, "env-file", ".env", "可选的环境变量配置文件路径")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stdout, "%s v%s - 轻量级主机网络流量实时监控与管理服务\n\n用法:\n  flowmaster [选项]\n\n选项:\n",
@@ -41,6 +43,19 @@ func main() {
 	}
 
 	config.LoadDotEnv(envFile)
+	if healthcheck {
+		port := config.ParseIntInRange(os.Getenv("PORT"), 10089, 1, 65535)
+		hcClient := &http.Client{Timeout: 3 * time.Second}
+		resp, err := hcClient.Get(fmt.Sprintf("http://127.0.0.1:%d/api/version", port))
+		if err != nil {
+			os.Exit(1)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)

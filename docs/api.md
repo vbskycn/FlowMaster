@@ -67,7 +67,7 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 
 为保证已有探针或脚本平滑升级，以下端点完全保留原有路径与字段结构：
 
-- `GET /api/version` -> `{"version": "1.1.21"}`
+- `GET /api/version` -> `{"version": "2.0.0"}`
 - `GET /api/interfaces` -> `{"interfaces": ["eth0"]}`
 - `GET /api/stats/{interface}/{period}`（`period`: `l`, `5`, `h`, `d`, `m`, `y`，保留 `data` 文本行与 MiB 精度 `series`）
 - `GET /api/stats/{interface}/range/{startDate}/{endDate}`

@@ -16,12 +16,12 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Verify Tag Matches VERSION
+      - name: Verify Tag Matches VERSION & Extract Changelog
         id: meta
         run: |
           FILE_VER="$(awk -F= '/^APP_VERSION=/ { gsub(/[[:space:]"'"'"']/, "", $2); print $2 }' VERSION)"
@@ -33,6 +33,15 @@ jobs:
           echo "version=${FILE_VER}" >> "$GITHUB_OUTPUT"
           REPO_LOWER="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           echo "ghcr_image=ghcr.io/${REPO_LOWER}" >> "$GITHUB_OUTPUT"
+
+          awk -v ver="${FILE_VER}" '
+            $0 ~ "^## " ver "([[:space:]]|$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [[ ! -s release_notes.md ]]; then
+            echo "FlowMaster v${FILE_VER}" > release_notes.md
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -65,6 +74,12 @@ jobs:
           cp install.sh dist/install.sh
           (cd dist && sha256sum flowmaster-linux-amd64.tar.gz flowmaster-linux-arm64.tar.gz install.sh > SHA256SUMS)
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
       - name: Login to GHCR
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
@@ -72,16 +87,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push GHCR Image
+      - name: Build and Push Multi-Arch GHCR Image
         run: |
           IMG="${{ steps.meta.outputs.ghcr_image }}"
           VER="${{ steps.meta.outputs.version }}"
-          docker build \
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
             -t "${IMG}:${VER}" \
             -t "${IMG}:latest" \
             .
-          docker push "${IMG}:${VER}"
-          docker push "${IMG}:latest"
 
       - name: Publish GitHub Release
         env:
@@ -89,9 +104,10 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --title "FlowMaster ${TAG}" --notes-file release_notes.md
             gh release upload "${TAG}" dist/* --clobber
           else
             gh release create "${TAG}" dist/* \
               --title "FlowMaster ${TAG}" \
-              --generate-notes
+              --notes-file release_notes.md
           fi

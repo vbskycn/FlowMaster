@@ -1,6 +1,7 @@
 services:
   flowmaster:
-    image: ghcr.io/vbskycn/flowmaster:1.1.21
+    # 官方多架构镜像 (linux/amd64, linux/arm64)；也可替换为 ghcr.io/vbskycn/flowmaster:2.0.0
+    image: zhoujie218/flowmaster:2.0.0
     container_name: flowmaster
     restart: unless-stopped
     # 使用 host 网络模式以便零开销读取宿主机真实物理网卡 (/proc/net/dev)
@@ -18,7 +19,7 @@ services:
       # 可选：以只读方式挂载宿主机原有 vnstat 数据目录，支持混合读取或一键导入老数据
       # - /var/lib/vnstat:/var/lib/vnstat:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:10089/api/version"]
+      test: ["CMD", "/usr/local/bin/flowmaster", "-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

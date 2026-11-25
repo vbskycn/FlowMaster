@@ -1,6 +1,22 @@
 # FlowMaster 安装、安全与运维指南
 
-## 一、Docker 生产部署建议
+## 一、一键安装与更新脚本 (`install.sh`)
+
+`install.sh` 统一封装了 **Docker 容器部署** 与 **静态二进制 + systemd 部署** 两种生产模式，并内置国内网络环境自动探测机制：
+
+1. **国内网络自动加速原理**：
+   - 执行安装或更新时，脚本先探测当前网络归属地与 GitHub 官方直连连通性；
+   - 若识别为国内网络或直连超时，自动轮询测速内置代理池并**校验返回内容真实性**（拒绝代理返回的 HTML 报错页），下载二进制时强制比对 `SHA256SUMS` 校验和；
+   - Docker 模式下若官方源拉取超时，自动回退尝试镜像加速前缀与 GHCR 源。
+2. **常用维护子命令**：
+   - `sudo ./install.sh docker`：部署或更新 Docker 容器（更新异常自动回退旧镜像 ID）
+   - `sudo ./install.sh binary`：部署或更新二进制 `systemd` 服务（更新异常自动回退旧二进制）
+   - `sudo ./install.sh update`：自动检测当前部署模式并平滑更新至最新版本
+   - `sudo ./install.sh status` / `sudo ./install.sh uninstall`
+
+---
+
+## 二、Docker 生产部署建议
 
 1. **网络模式**：容器需读取宿主机真实网卡流量（`/proc/net/dev`），请使用 `--network host`。若需更改监听地址或端口，可通过环境变量 `-e HOST=127.0.0.1 -e PORT=10089` 控制（例如仅监听本机回环并由宿主机 Nginx / Caddy 反代提供公网 HTTPS）。
 2. **持久化目录**：始终使用明确的宿主机目录挂载至 `/data`（如 `-v /opt/flowmaster/data:/data`），严禁使用匿名卷存储数据库。`/data` 目录结构如下：
@@ -14,7 +30,7 @@
 
 ---
 
-## 二、公网反向代理与 HTTPS 安全配置
+## 三、公网反向代理与 HTTPS 安全配置
 
 公网暴露建议前置 HTTPS 反向代理（如 Caddy 或 Nginx），并在 FlowMaster 中设置 `TRUST_PROXY=true`：
 
@@ -37,7 +53,7 @@ location / {
 
 ---
 
-## 三、备份、还原与灾难恢复
+## 四、备份、还原与灾难恢复
 
 1. **日常备份**：登录 Web 管理后台 →「备份与还原」→「一键创建备份快照」→「下载到本地」。
 2. **故障恢复**：
@@ -46,7 +62,7 @@ location / {
 
 ---
 
-## 四、常见问题排查
+## 五、常见问题排查
 
 ### 1. 容器内只看到 `eth0` 而看不到宿主机多张网卡？
 请确认 Docker 启动命令或 `compose.yaml` 中已配置 `--network host`（`network_mode: host`）。默认桥接网络下容器拥有独立的 Network Namespace，只能看到容器自身虚拟网卡。

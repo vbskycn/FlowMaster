@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ==============================================================================
-# Stage 1: 构建现代化前端静态产物
+# Stage 1: 构建现代化前端静态产物（在宿主构建架构原生执行，跨架构零模拟损耗）
 # ==============================================================================
-FROM node:22-alpine AS web-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
@@ -12,10 +12,12 @@ COPY web/ ./
 RUN npm run build
 
 # ==============================================================================
-# Stage 2: 编译零 CGO 纯静态 Go 二进制（内嵌 VERSION 与前端静态资源）
+# Stage 2: 原生交叉编译零 CGO 纯静态 Go 二进制（内嵌 VERSION 与前端静态资源）
 # ==============================================================================
-FROM golang:1.26-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-builder
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG TARGETOS
+ARG TARGETARCH
 ENV GOPROXY=${GOPROXY} CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -24,14 +26,18 @@ COPY VERSION embed.go ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY --from=web-builder /src/web/dist ./web/dist
-RUN go build -trimpath -ldflags="-s -w" -o /out/flowmaster ./cmd/flowmaster && \
-    /out/flowmaster --version
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/flowmaster ./cmd/flowmaster
 
 # ==============================================================================
-# Stage 3: 极简安全运行镜像（含轻量 vnstat CLI 以支持容器内混合/导入模式）
+# Stage 3: 极简安全多架构运行镜像（含轻量 vnstat CLI 支持容器混合/导入模式）
 # ==============================================================================
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata vnstat wget && \
+LABEL org.opencontainers.image.title="FlowMaster" \
+      org.opencontainers.image.description="Lightweight Linux Host Network Traffic Monitor & Admin Panel" \
+      org.opencontainers.image.source="https://github.com/vbskycn/FlowMaster" \
+      org.opencontainers.image.licenses="MIT"
+
+RUN apk add --no-cache ca-certificates tzdata vnstat && \
     mkdir -p /data && \
     chmod 0750 /data
 
@@ -46,6 +52,6 @@ EXPOSE 10089
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/api/version" || exit 1
+    CMD ["/usr/local/bin/flowmaster", "-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/flowmaster"]
