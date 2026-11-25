@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"sort"
@@ -49,8 +52,9 @@ type Hub struct {
 	log       *logger.Manager
 	startedAt time.Time
 
-	mu       sync.RWMutex
-	sessions map[string]*liveNodeSession
+	mu              sync.RWMutex
+	sessions        map[string]*liveNodeSession
+	localPublicIPv4 string
 
 	rpcMu   sync.Mutex
 	pending map[string]chan model.ClusterRPCResponse
@@ -64,7 +68,7 @@ func NewHub(
 	up *updater.Manager,
 	log *logger.Manager,
 ) *Hub {
-	return &Hub{
+	h := &Hub{
 		cfg:       cfg,
 		store:     st,
 		engine:    eng,
@@ -74,6 +78,41 @@ func NewHub(
 		startedAt: time.Now(),
 		sessions:  make(map[string]*liveNodeSession),
 		pending:   make(map[string]chan model.ClusterRPCResponse),
+	}
+	go h.detectLocalPublicIPv4Once()
+	return h
+}
+
+// detectLocalPublicIPv4Once 后台静默探测主控本机公网 IPv4（仅当网卡无公网 IPv4 时用于前端优先展示），失败不影响启动。
+func (h *Hub) detectLocalPublicIPv4Once() {
+	endpoints := []string{
+		"https://api4.ipify.org",
+		"https://ipv4.icanhazip.com",
+		"https://4.ident.me",
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, ep := range endpoints {
+		req, err := http.NewRequest(http.MethodGet, ep, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "FlowMaster-PublicIP-Probe")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		cand := strings.TrimSpace(string(raw))
+		if ip := net.ParseIP(cand); ip != nil && ip.To4() != nil && !ip.IsPrivate() && !ip.IsLoopback() {
+			h.mu.Lock()
+			h.localPublicIPv4 = ip.String()
+			h.mu.Unlock()
+			return
+		}
 	}
 }
 
@@ -485,6 +524,10 @@ func (h *Hub) buildLocalSummary(ctx context.Context, targetLatestVer string) mod
 		}
 	}
 
+	h.mu.RLock()
+	localPubIP := h.localPublicIPv4
+	h.mu.RUnlock()
+
 	return model.ClusterNodeSummary{
 		ID:               "local",
 		IsLocal:          true,
@@ -492,6 +535,7 @@ func (h *Hub) buildLocalSummary(ctx context.Context, targetLatestVer string) mod
 		GroupName:        "主控中心",
 		Online:           true,
 		LastSeen:         time.Now().Unix(),
+		EndpointIP:       localPubIP,
 		IPv4:             ipv4s,
 		IPv6:             ipv6s,
 		PanelPort:        h.cfg.Port,

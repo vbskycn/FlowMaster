@@ -223,4 +223,34 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	if !savedOnAgent.Enabled || savedOnAgent.ResetDay != 15 || savedOnAgent.WarnPercent != 85 {
 		t.Fatalf("agent SQLite did not receive remote quota update: %+v", savedOnAgent)
 	}
+
+	// 6. 验证后台重命名分组、删除分组（清空归属但不删节点）以及删除节点
+	renameBody, _ := json.Marshal(map[string]string{"oldName": "US-West", "newName": "北美节点"})
+	reqRename, _ := http.NewRequest(http.MethodPut, hubTS.URL+"/api/v1/admin/cluster/groups", bytes.NewReader(renameBody))
+	reqRename.Header.Set("Content-Type", "application/json")
+	reqRename.Header.Set("X-Requested-With", "FlowMaster")
+	reqRename.AddCookie(adminCookie)
+	respRename, err := client.Do(reqRename)
+	if err != nil || respRename.StatusCode != http.StatusOK {
+		t.Fatalf("rename cluster group failed: status=%d err=%v", respRename.StatusCode, err)
+	}
+	respRename.Body.Close()
+
+	reqDelGrp, _ := http.NewRequest(http.MethodDelete, hubTS.URL+"/api/v1/admin/cluster/groups/%E5%8C%97%E7%BE%8E%E8%8A%82%E7%82%B9", nil)
+	reqDelGrp.Header.Set("X-Requested-With", "FlowMaster")
+	reqDelGrp.AddCookie(adminCookie)
+	respDelGrp, err := client.Do(reqDelGrp)
+	if err != nil || respDelGrp.StatusCode != http.StatusOK {
+		t.Fatalf("delete cluster group failed: status=%d err=%v", respDelGrp.StatusCode, err)
+	}
+	respDelGrp.Body.Close()
+
+	reqDelNode, _ := http.NewRequest(http.MethodDelete, hubTS.URL+"/api/v1/admin/cluster/nodes/"+createRes.Node.ID, nil)
+	reqDelNode.Header.Set("X-Requested-With", "FlowMaster")
+	reqDelNode.AddCookie(adminCookie)
+	respDelNode, err := client.Do(reqDelNode)
+	if err != nil || respDelNode.StatusCode != http.StatusOK {
+		t.Fatalf("delete cluster node failed: status=%d err=%v", respDelNode.StatusCode, err)
+	}
+	respDelNode.Body.Close()
 }

@@ -108,7 +108,8 @@
             class="px-2.5 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950"
           >
             <option value="__all__">全部分组 ({{ nodes.length }})</option>
-            <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
+            <option v-for="g in groupOptions" :key="g.name" :value="g.name">{{ g.name }} ({{ g.count }})</option>
+            <option v-if="ungroupedCount > 0" value="__ungrouped__">未分组 ({{ ungroupedCount }})</option>
           </select>
 
           <select
@@ -186,7 +187,7 @@
                   </span>
                 </div>
                 <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 font-num">
-                  <span v-if="primaryIPv4(node)">IPv4: {{ primaryIPv4(node) }}</span>
+                  <span v-if="primaryIPv4(node)" :title="ipv4Tooltip(node)">IPv4: {{ primaryIPv4(node) }}</span>
                   <span v-if="primaryIPv6(node)" class="truncate max-w-44" :title="primaryIPv6(node)">IPv6: {{ primaryIPv6(node) }}</span>
                 </div>
               </div>
@@ -261,6 +262,15 @@
                 配置
               </button>
               <button
+                v-if="!node.isLocal"
+                type="button"
+                class="px-2 py-1 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
+                title="从主控删除该节点"
+                @click="confirmDeleteNode(node)"
+              >
+                删除
+              </button>
+              <button
                 type="button"
                 class="px-3 py-1 rounded-lg font-medium bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
                 @click="$emit('select-node', node.id)"
@@ -302,7 +312,7 @@
                   <div v-if="node.groupName" class="text-[11px] text-slate-400 mt-0.5">{{ node.groupName }}</div>
                 </td>
                 <td class="py-2.5 px-3 font-num text-[11px] text-slate-500">
-                  <div v-if="primaryIPv4(node)">{{ primaryIPv4(node) }}</div>
+                  <div v-if="primaryIPv4(node)" :title="ipv4Tooltip(node)">{{ primaryIPv4(node) }}</div>
                   <div v-if="primaryIPv6(node)" class="truncate max-w-40" :title="primaryIPv6(node)">{{ primaryIPv6(node) }}</div>
                 </td>
                 <td class="py-2.5 px-3 text-right font-num whitespace-nowrap">
@@ -325,6 +335,9 @@
                 <td class="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
                   <button v-if="!node.isLocal" type="button" class="px-2 py-1 rounded border border-slate-200 dark:border-slate-700 cursor-pointer" @click="openNodeConfig(node)">
                     配置
+                  </button>
+                  <button v-if="!node.isLocal" type="button" class="px-2 py-1 rounded border border-red-200 dark:border-red-900/70 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer" @click="confirmDeleteNode(node)">
+                    删除
                   </button>
                   <button type="button" class="px-2.5 py-1 rounded bg-blue-600 text-white cursor-pointer" @click="$emit('select-node', node.id)">
                     查看详情
@@ -613,13 +626,16 @@ watch([searchQuery, selectedGroup, tablePageSize], () => {
 const onlineCount = computed(() => props.nodes.filter(n => n.online).length);
 const outdatedCount = computed(() => props.nodes.filter(n => n.UpgradeOutdated || n.upgradeOutdated).length);
 
-const groups = computed(() => {
-  const s = new Set();
+const groupOptions = computed(() => {
+  const counts = new Map();
   for (const n of props.nodes) {
-    if (n.groupName) s.add(n.groupName);
+    const g = String(n.groupName || '').trim();
+    if (g) counts.set(g, (counts.get(g) || 0) + 1);
   }
-  return [...s];
+  return [...counts.entries()].map(([name, count]) => ({ name, count }));
 });
+
+const ungroupedCount = computed(() => props.nodes.filter(n => !String(n.groupName || '').trim()).length);
 
 const fleetSummary = computed(() => {
   let rxBps = 0, txBps = 0, todayRx = 0, todayTx = 0, monthRx = 0, monthTx = 0, warnCount = 0;
@@ -650,7 +666,11 @@ const fleetSummary = computed(() => {
 const filteredNodes = computed(() => {
   const q = searchQuery.value.toLowerCase();
   const list = props.nodes.filter(n => {
-    if (selectedGroup.value !== '__all__' && n.groupName !== selectedGroup.value) return false;
+    if (selectedGroup.value === '__ungrouped__') {
+      if (String(n.groupName || '').trim() !== '') return false;
+    } else if (selectedGroup.value !== '__all__' && n.groupName !== selectedGroup.value) {
+      return false;
+    }
     if (!q) return true;
     const hay = [
       n.name,
@@ -734,14 +754,29 @@ const compareChart = computed(() => {
 });
 
 function primaryIPv4(node) {
-  if (node.ipv4?.length) return node.ipv4[0];
-  if (node.endpointIp && !node.endpointIp.includes(':')) return node.endpointIp;
+  const publicNicV4 = (node.ipv4 || []).find(ip => ip && !ip.includes(':') && !isLoopbackOrPrivateIP(ip));
+  if (publicNicV4) return publicNicV4;
+  if (node.endpointIp && !node.endpointIp.includes(':') && !isLoopbackOrPrivateIP(node.endpointIp)) {
+    return node.endpointIp;
+  }
+  const anyNicV4 = (node.ipv4 || []).find(ip => ip && !ip.includes(':') && !ip.startsWith('127.'));
+  if (anyNicV4) return anyNicV4;
   return '';
 }
 
+function ipv4Tooltip(node) {
+  const pub = primaryIPv4(node);
+  const priv = (node.ipv4 || []).find(ip => ip && ip !== pub);
+  if (pub && priv) return `公网 IPv4: ${pub} | 内网网卡: ${priv}`;
+  return pub;
+}
+
 function primaryIPv6(node) {
-  if (node.ipv6?.length) return node.ipv6[0];
-  if (node.endpointIp && node.endpointIp.includes(':')) return node.endpointIp;
+  const publicNicV6 = (node.ipv6 || []).find(ip => ip && !isLoopbackOrPrivateIP(ip));
+  if (publicNicV6) return publicNicV6;
+  if (node.endpointIp && node.endpointIp.includes(':') && !isLoopbackOrPrivateIP(node.endpointIp)) {
+    return node.endpointIp;
+  }
   return '';
 }
 
@@ -892,5 +927,20 @@ function openNodeConfig(node) {
     return;
   }
   editingNode.value = node;
+}
+
+async function confirmDeleteNode(node) {
+  if (!props.authenticated) {
+    emit('require-auth');
+    return;
+  }
+  const ok = window.confirm(`确认从主控删除节点「${node.name}」吗？\n\n（仅移除主控面板记录，不会删除目标服务器本地数据）`);
+  if (!ok) return;
+  try {
+    await apiRequest(`/api/v1/admin/cluster/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' });
+    emit('refresh');
+  } catch (err) {
+    window.alert(err.message);
+  }
 }
 </script>

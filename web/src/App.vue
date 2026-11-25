@@ -5,7 +5,12 @@
       <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
         <!-- 品牌区 + 系统版本号 + 多机/单机视图切换 -->
         <div class="flex flex-wrap items-center gap-3 min-w-0">
-          <div class="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            class="flex items-center gap-2.5 min-w-0 text-left cursor-pointer hover:opacity-85 transition-opacity"
+            title="返回首页"
+            @click="goHome"
+          >
             <img src="/favicon.svg" alt="FlowMaster" class="w-8 h-8 rounded-xl shrink-0 shadow-xs" />
             <div class="flex items-baseline gap-2 min-w-0">
               <h1 class="text-base sm:text-lg font-bold tracking-tight truncate">{{ boot.siteTitle }}</h1>
@@ -16,7 +21,7 @@
                 v{{ boot.version }}
               </span>
             </div>
-          </div>
+          </button>
 
           <!-- 顶栏一级视图切换：多机总览对比 <-> 单机监控详情 -->
           <div
@@ -423,8 +428,16 @@
           <span v-if="boot.version" class="font-num text-[11px] px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800">v{{ boot.version }}</span>
           <span>轻量级多主机网络流量统一监控与管理系统</span>
         </div>
-        <a href="https://github.com/vbskycn/FlowMaster" target="_blank" rel="noopener noreferrer" class="hover:text-blue-600 dark:hover:text-blue-400">
-          GitHub
+        <a
+          href="https://github.com/vbskycn/FlowMaster"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-1.5 font-medium text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+        >
+          <svg class="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+          </svg>
+          <span>vbskycn</span>
         </a>
       </div>
     </footer>
@@ -565,6 +578,18 @@ let summaryRefreshTimer = null;
 
 const activeNodeSummary = computed(() => clusterState.nodes.find(n => n.id === activeNodeId.value) || null);
 const currentNicMeta = computed(() => interfaces.value.find(i => i.name === selectedInterface.value) || null);
+
+function goHome() {
+  showAdminConsole.value = false;
+  editingRemoteNode.value = null;
+  if (clusterState.nodes.length > 1) {
+    switchViewMode('fleet');
+  } else {
+    activeNodeId.value = 'local';
+    switchViewMode('single');
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
 
 const realtimePeakRx = computed(() => {
   let m = 0;

@@ -39,6 +39,8 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/cluster/nodes", s.requireAdmin(s.handleAdminCreateNode))
 	mux.HandleFunc("PUT /api/v1/admin/cluster/nodes/{id}", s.requireAdmin(s.handleAdminUpdateNodeMeta))
 	mux.HandleFunc("DELETE /api/v1/admin/cluster/nodes/{id}", s.requireAdmin(s.handleAdminDeleteNode))
+	mux.HandleFunc("PUT /api/v1/admin/cluster/groups", s.requireAdmin(s.handleAdminRenameClusterGroup))
+	mux.HandleFunc("DELETE /api/v1/admin/cluster/groups/{name}", s.requireAdmin(s.handleAdminDeleteClusterGroup))
 	mux.HandleFunc("GET /api/v1/admin/cluster/nodes/{id}/config", s.requireAdmin(s.handleAdminGetRemoteNodeConfig))
 	mux.HandleFunc("PUT /api/v1/admin/cluster/nodes/{id}/config", s.requireAdmin(s.handleAdminSaveRemoteNodeConfig))
 	mux.HandleFunc("PUT /api/v1/admin/cluster/nodes/{id}/interfaces/{name}", s.requireAdmin(s.handleAdminUpdateRemoteNodeInterface))
@@ -469,6 +471,54 @@ func (s *Server) handleAdminDeleteNode(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("管理员移除了集群受控节点: %s", nodeID)
 	writeJSON(w, http.StatusOK, map[string]any{"message": "节点已移除"})
+}
+
+func (s *Server) handleAdminRenameClusterGroup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OldName string `json:"oldName"`
+		NewName string `json:"newName"`
+	}
+	if err := readJSONBody(r, &req, 16*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	oldName := strings.TrimSpace(req.OldName)
+	newName := strings.TrimSpace(req.NewName)
+	if oldName == "" || newName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "原分组名和新分组名均不能为空"})
+		return
+	}
+	if len([]rune(newName)) > 32 {
+		newName = string([]rune(newName)[:32])
+	}
+	affected, err := s.store.RenameClusterGroup(oldName, newName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "修改分组失败"})
+		return
+	}
+	s.log.Info("管理员重命名节点分组: %s -> %s (影响 %d 台节点)", oldName, newName, affected)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":  fmt.Sprintf("分组已修改为「%s」（更新 %d 台节点）", newName, affected),
+		"affected": affected,
+	})
+}
+
+func (s *Server) handleAdminDeleteClusterGroup(w http.ResponseWriter, r *http.Request) {
+	groupName := strings.TrimSpace(r.PathValue("name"))
+	if groupName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "分组名称不能为空"})
+		return
+	}
+	affected, err := s.store.ClearClusterGroup(groupName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "删除分组失败"})
+		return
+	}
+	s.log.Info("管理员删除了节点分组: %s (已将 %d 台节点归为未分组)", groupName, affected)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":  fmt.Sprintf("已删除分组「%s」（%d 台节点已转为未分组）", groupName, affected),
+		"affected": affected,
+	})
 }
 
 func (s *Server) handleAdminGetRemoteNodeConfig(w http.ResponseWriter, r *http.Request) {

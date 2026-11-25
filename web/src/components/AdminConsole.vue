@@ -555,6 +555,129 @@
           </details>
         </section>
 
+        <!-- Tab 4.5: 节点与分组管理（分组改名/删除 + 清理重复或未安装节点） -->
+        <section v-if="activeTab === 'cluster'" class="space-y-6">
+          <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3.5">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <h3 class="text-sm font-semibold text-slate-900 dark:text-white">节点分组管理</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">支持批量重命名分组或删除分组（删除分组仅清空节点分组归属，不会删除服务器节点）。</p>
+              </div>
+              <button type="button" class="px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer" @click="loadClusterAdminNodes">
+                刷新列表
+              </button>
+            </div>
+
+            <div v-if="clusterGroups.length === 0" class="text-xs text-slate-400 py-3">
+              当前暂无自定义被控节点分组（可在下方节点列表中为节点指定分组标签）。
+            </div>
+            <div v-else class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+              <table class="w-full text-xs text-left border-collapse">
+                <thead class="bg-slate-100/80 dark:bg-slate-900/80 text-slate-500 dark:text-slate-400">
+                  <tr>
+                    <th class="py-2 px-3 w-12 text-center">#</th>
+                    <th class="py-2 px-3">当前分组名</th>
+                    <th class="py-2 px-3">机器数量</th>
+                    <th class="py-2 px-3">修改为新名称</th>
+                    <th class="py-2 px-3 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200/70 dark:divide-slate-800">
+                  <tr v-for="(grp, idx) in clusterGroups" :key="grp.name">
+                    <td class="py-2 px-3 text-center font-num text-slate-400">{{ idx + 1 }}</td>
+                    <td class="py-2 px-3 font-semibold text-slate-800 dark:text-slate-100">{{ grp.name }}</td>
+                    <td class="py-2 px-3 font-num text-slate-600 dark:text-slate-300">{{ grp.count }} 台</td>
+                    <td class="py-2 px-3">
+                      <input
+                        v-model.trim="grp._newName"
+                        type="text"
+                        maxlength="32"
+                        class="w-44 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      />
+                    </td>
+                    <td class="py-2 px-3 text-right space-x-2 whitespace-nowrap">
+                      <button
+                        type="button"
+                        class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
+                        @click="renameClusterGroupRow(grp)"
+                      >
+                        保存修改
+                      </button>
+                      <button
+                        type="button"
+                        class="px-3 py-1 rounded bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400 hover:opacity-80 cursor-pointer"
+                        @click="deleteClusterGroupRow(grp)"
+                      >
+                        删除分组
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3.5">
+            <div>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-white">已注册被控节点列表（含未安装 / 离线节点）</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">可直接修改节点名称、分组与备注，或一键删除重复添加、尚未安装的残留节点。</p>
+            </div>
+
+            <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+              <table class="w-full text-xs text-left border-collapse">
+                <thead class="bg-slate-100/80 dark:bg-slate-900/80 text-slate-500 dark:text-slate-400">
+                  <tr>
+                    <th class="py-2.5 px-3 w-12 text-center">#</th>
+                    <th class="py-2.5 px-3">状态 / 版本</th>
+                    <th class="py-2.5 px-3">公网 IP / 地址</th>
+                    <th class="py-2.5 px-3">显示名称</th>
+                    <th class="py-2.5 px-3">所属分组</th>
+                    <th class="py-2.5 px-3">备注</th>
+                    <th class="py-2.5 px-3 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200/70 dark:divide-slate-800">
+                  <tr v-if="clusterNodes.length === 0">
+                    <td colspan="7" class="py-8 text-center text-slate-400">当前暂无已注册的远程被控节点</td>
+                  </tr>
+                  <tr v-for="(node, idx) in clusterNodes" :key="node.id" class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                    <td class="py-2.5 px-3 text-center font-num text-slate-400">{{ idx + 1 }}</td>
+                    <td class="py-2.5 px-3 whitespace-nowrap">
+                      <span class="px-2 py-0.5 rounded-full text-[11px]"
+                        :class="node.online
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : (node.lastSeen ? 'bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400' : 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300')">
+                        {{ node.online ? '在线' : (node.lastSeen ? '离线' : '未安装/待接入') }}
+                      </span>
+                      <div class="font-num text-[11px] text-slate-400 mt-0.5">{{ node.version ? `v${node.version}` : '—' }}</div>
+                    </td>
+                    <td class="py-2.5 px-3 font-num text-[11px] text-slate-500">
+                      {{ node.endpointIp || (node.ipv4 && node.ipv4[0]) || '—' }}
+                    </td>
+                    <td class="py-2.5 px-3">
+                      <input v-model.trim="node._editName" type="text" maxlength="48" class="w-32 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                    </td>
+                    <td class="py-2.5 px-3">
+                      <input v-model.trim="node._editGroup" type="text" maxlength="32" placeholder="留空为未分组" class="w-28 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                    </td>
+                    <td class="py-2.5 px-3">
+                      <input v-model.trim="node._editRemark" type="text" maxlength="80" class="w-32 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                    </td>
+                    <td class="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
+                      <button type="button" class="px-2.5 py-1 rounded bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 cursor-pointer" @click="saveClusterNodeRow(node)">
+                        保存
+                      </button>
+                      <button type="button" class="px-2.5 py-1 rounded bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400 hover:opacity-80 cursor-pointer" @click="deleteClusterNodeRow(node)">
+                        删除
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <!-- Tab 5: 安全参数与倒序系统日志 -->
         <section v-if="activeTab === 'security'" class="space-y-6">
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -709,6 +832,7 @@ const emit = defineEmits(['close', 'updated', 'logged-out']);
 
 const tabs = [
   { key: 'overview', label: '概览与数据源' },
+  { key: 'cluster', label: '节点与分组' },
   { key: 'interfaces', label: '网卡管理' },
   { key: 'quota', label: '月度配额与告警' },
   { key: 'backups', label: '备份与还原' },
@@ -802,6 +926,8 @@ const alertForm = reactive({
 });
 
 const adminInterfaces = ref([]);
+const clusterNodes = ref([]);
+const clusterGroups = ref([]);
 const backups = ref([]);
 const backupNote = ref('');
 const backupBusy = ref(false);
@@ -887,10 +1013,98 @@ async function loadLogs() {
   logs.value = data.entries || [];
 }
 
+async function loadClusterAdminNodes() {
+  const data = await apiRequest('/api/v1/cluster/nodes');
+  const remotes = (data.nodes || []).filter(n => !n.isLocal);
+  clusterNodes.value = remotes.map(n => ({
+    ...n,
+    _editName: n.name || '',
+    _editGroup: n.groupName || '',
+    _editRemark: n.remark || ''
+  }));
+  const grpMap = new Map();
+  for (const n of remotes) {
+    const g = String(n.groupName || '').trim();
+    if (g) grpMap.set(g, (grpMap.get(g) || 0) + 1);
+  }
+  clusterGroups.value = [...grpMap.entries()].map(([name, count]) => ({
+    name,
+    count,
+    _newName: name
+  }));
+}
+
+async function renameClusterGroupRow(grp) {
+  const nextName = String(grp._newName || '').trim();
+  if (!nextName) {
+    showNotice('新分组名不能为空', 'error');
+    return;
+  }
+  if (nextName === grp.name) return;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/groups', {
+      method: 'PUT',
+      body: { oldName: grp.name, newName: nextName }
+    });
+    showNotice(res.message || '分组已修改');
+    await loadClusterAdminNodes();
+    emit('updated');
+  } catch (err) {
+    showNotice(err.message, 'error');
+  }
+}
+
+async function deleteClusterGroupRow(grp) {
+  if (!window.confirm(`确认删除分组「${grp.name}」吗？\n\n该分组下的 ${grp.count} 台机器将自动变为“未分组”，不会被删除。`)) return;
+  try {
+    const res = await apiRequest(`/api/v1/admin/cluster/groups/${encodeURIComponent(grp.name)}`, { method: 'DELETE' });
+    showNotice(res.message || '分组已删除');
+    await loadClusterAdminNodes();
+    emit('updated');
+  } catch (err) {
+    showNotice(err.message, 'error');
+  }
+}
+
+async function saveClusterNodeRow(node) {
+  if (!node._editName) {
+    showNotice('节点显示名称不能为空', 'error');
+    return;
+  }
+  try {
+    await apiRequest(`/api/v1/admin/cluster/nodes/${encodeURIComponent(node.id)}`, {
+      method: 'PUT',
+      body: {
+        name: node._editName,
+        groupName: node._editGroup,
+        remark: node._editRemark
+      }
+    });
+    showNotice(`节点「${node._editName}」信息已保存`);
+    await loadClusterAdminNodes();
+    emit('updated');
+  } catch (err) {
+    showNotice(err.message, 'error');
+  }
+}
+
+async function deleteClusterNodeRow(node) {
+  if (!window.confirm(`确认从主控删除节点「${node.name}」吗？\n\n（仅移除主控记录，不影响目标机器本地服务）`)) return;
+  try {
+    await apiRequest(`/api/v1/admin/cluster/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' });
+    showNotice(`已移除节点「${node.name}」`);
+    await loadClusterAdminNodes();
+    emit('updated');
+  } catch (err) {
+    showNotice(err.message, 'error');
+  }
+}
+
 async function switchTab(key) {
   activeTab.value = key;
   try {
     if (key === 'overview') await loadOverview();
+    if (key === 'cluster') await loadClusterAdminNodes();
     if (key === 'interfaces') await loadAdminInterfaces();
     if (key === 'backups') await loadBackups();
     if (key === 'security') await loadLogs();

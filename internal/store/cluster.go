@@ -57,6 +57,26 @@ func (s *Store) DeleteClusterNode(id string) error {
 	return err
 }
 
+// RenameClusterGroup 批量重命名集群节点分组（将 oldName 改为 newName）。
+func (s *Store) RenameClusterGroup(oldName, newName string) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return 0, errors.New("数据库已关闭")
+	}
+	res, err := s.db.Exec("UPDATE cluster_nodes SET group_name = ? WHERE group_name = ?", newName, oldName)
+	if err != nil {
+		return 0, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected, nil
+}
+
+// ClearClusterGroup 删除指定分组（清空该分组下所有节点的分组归属，不删除节点本身）。
+func (s *Store) ClearClusterGroup(groupName string) (int64, error) {
+	return s.RenameClusterGroup(groupName, "")
+}
+
 // ListClusterNodes 返回所有已注册的被控节点记录。
 func (s *Store) ListClusterNodes() ([]model.ClusterNodeRecord, error) {
 	s.mu.RLock()
