@@ -308,28 +308,35 @@ pull_flowmaster_image() {
     local candidates=()
 
     if (( IS_CN_ENV == 1 )); then
+        # 优先尝试直连可达率更高的 GHCR 与宿主机 daemon.json 已配置的官方源，超时再回退公共镜像代理
+        candidates+=("${GHCR_IMAGE}:${version}")
+        candidates+=("${DOCKERHUB_IMAGE}:${version}")
         local m
         for m in "${DEFAULT_DOCKER_MIRRORS[@]}"; do
             candidates+=("${m}/${DOCKERHUB_IMAGE}:${version}")
         done
-        candidates+=("${GHCR_IMAGE}:${version}")
-        candidates+=("${DOCKERHUB_IMAGE}:${version}")
     else
         candidates+=("${DOCKERHUB_IMAGE}:${version}")
         candidates+=("${GHCR_IMAGE}:${version}")
     fi
 
-    local candidate
+    local candidate pull_ok
     for candidate in "${candidates[@]}"; do
-        info "尝试拉取容器镜像: ${candidate}"
-        if docker pull "$candidate"; then
+        info "尝试拉取容器镜像 (单源超时上限 60s): ${candidate}"
+        pull_ok=0
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 60 docker pull "$candidate" && pull_ok=1 || pull_ok=0
+        else
+            docker pull "$candidate" && pull_ok=1 || pull_ok=0
+        fi
+        if (( pull_ok == 1 )); then
             if [[ "$candidate" != "$target_tag" ]]; then
                 docker tag "$candidate" "$target_tag"
             fi
             docker tag "$target_tag" "${DOCKERHUB_IMAGE}:latest"
             return 0
         fi
-        warn "从 ${candidate} 拉取未成功，自动切换下一个镜像源..."
+        warn "从 ${candidate} 拉取超时或未成功，自动切换下一个镜像源..."
     done
 
     fail "所有镜像源均拉取失败，请检查 Docker 网络或配置 daemon.json registry-mirrors 后重试"
@@ -377,8 +384,8 @@ deploy_or_update_docker() {
         vnstat_args=(-v /var/lib/vnstat:/var/lib/vnstat:ro -e VNSTAT_DB_DIR=/var/lib/vnstat)
     fi
 
-    # 若同一台机器上旧 systemd 服务正在占用端口，提示用户避免双实例冲突
-    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    # 仅在默认标准容器名接管生产部署时，才停用同机旧 systemd 服务以防端口冲突
+    if [[ "$CONTAINER_NAME" == "flowmaster" ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         warn "检测到宿主机 systemd 服务 ${SERVICE_NAME} 正在运行，已停止该服务以交由 Docker 容器接管端口"
         systemctl stop "$SERVICE_NAME" || true
         systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
