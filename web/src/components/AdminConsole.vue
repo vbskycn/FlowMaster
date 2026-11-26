@@ -795,11 +795,11 @@
           </div>
         </section>
 
-        <!-- Tab 5: 安全参数与倒序系统日志 -->
-        <section v-if="activeTab === 'security'" class="space-y-6">
+        <!-- Tab 5: 系统设置（站点参数、主控模式开关、访问保护、保留策略与密码修改） -->
+        <section v-if="activeTab === 'settings'" class="space-y-6">
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3.5">
-              <h3 class="text-sm font-semibold text-slate-900 dark:text-white">站点保护、主控模式与存储保留上限</h3>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-white">站点、主控模式与存储保留设置</h3>
 
               <div>
                 <label class="block text-xs text-slate-500 mb-1">自定义面板标题</label>
@@ -862,7 +862,7 @@
                 class="px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
                 @click="saveSystemAndQuota"
               >
-                保存站点与保留参数
+                保存系统设置
               </button>
             </div>
 
@@ -885,8 +885,10 @@
               </button>
             </form>
           </div>
+        </section>
 
-          <!-- 倒序系统日志与告警日志查看器 -->
+        <!-- Tab 6: 系统日志（系统通道与告警通道倒序查看） -->
+        <section v-if="activeTab === 'logs'" class="space-y-4">
           <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="flex items-center gap-2">
@@ -934,7 +936,7 @@
               </div>
             </div>
 
-            <div class="max-h-72 overflow-y-auto rounded-lg bg-slate-950 text-slate-200 p-3 font-num text-xs space-y-1">
+            <div class="max-h-[60vh] overflow-y-auto rounded-lg bg-slate-950 text-slate-200 p-3 font-num text-xs space-y-1">
               <div v-if="logs.length === 0" class="text-slate-500 py-4 text-center">当前筛选条件下暂无日志</div>
               <div v-for="(item, idx) in logs" :key="idx" class="leading-relaxed break-all">
                 <span class="text-slate-500">[{{ formatISO(item.timestamp) }}]</span>
@@ -972,7 +974,8 @@ const tabs = computed(() => {
     { key: 'interfaces', label: '网卡管理' },
     { key: 'quota', label: '月度配额与告警' },
     { key: 'backups', label: '备份与还原' },
-    { key: 'security', label: '安全与系统日志' }
+    { key: 'settings', label: '系统设置' },
+    { key: 'logs', label: '系统日志' }
   );
   return list;
 });
@@ -1313,7 +1316,7 @@ async function switchTab(key) {
     if (key === 'cluster') await loadClusterAdminNodes();
     if (key === 'interfaces') await loadAdminInterfaces();
     if (key === 'backups') await loadBackups();
-    if (key === 'security') await loadLogs();
+    if (key === 'logs') await loadLogs();
   } catch (err) {
     showNotice(err.message, 'error');
   }

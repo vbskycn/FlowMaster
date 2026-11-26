@@ -1171,7 +1171,8 @@ func (s *Server) handleSPAStatic(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(cleanPath, ".html"):
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
 	case strings.HasSuffix(cleanPath, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
