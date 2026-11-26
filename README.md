@@ -201,6 +201,7 @@ docker compose up -d
 - 问题反馈：[GitHub Issues](https://github.com/vbskycn/FlowMaster/issues)
 - 版本发布：[GitHub Releases](https://github.com/vbskycn/FlowMaster/releases)
 - Docker 镜像：[Docker Hub (`zhoujie218/flowmaster`)](https://hub.docker.com/r/zhoujie218/flowmaster)
+- 交流社区：[LINUX DO 社区](https://linux.do)（感谢 LINUX DO 社区与各位佬友的支持与建议）
 - 开源协议：[MIT](LICENSE)
 
 如果 FlowMaster 对你有帮助，欢迎支持项目：
