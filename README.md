@@ -63,7 +63,7 @@ sudo ./install.sh uninstall
 
 如果你有几十台服务器希望在一个页面集中查看、对比和统一升级：
 
-1. **部署主控机（Hub）**：任选一台公网可达的机器（建议绑定双栈域名并反代 HTTPS，或直接使用公网 `IP:10089`），推荐执行 `sudo ./install.sh binary`（或 Docker 备选 `sudo ./install.sh docker`）完成部署，打开页面点击右上角 **「管理登录」** 设置管理员密码。主控启动后会自动在本地缓存保留 `linux/amd64` 与 `linux/arm64` 双架构安装包（也可在后台「节点与分组」一键手动同步）。
+1. **部署主控机（Hub）**：任选一台公网可达的机器（建议绑定双栈域名并反代 HTTPS，或直接使用公网 `IP:10089`），推荐执行 `sudo ./install.sh binary`（或 Docker 备选 `sudo ./install.sh docker`）完成部署，打开页面点击右上角 **「管理登录」** 设置管理员密码，进入 **「安全与系统日志」** 勾选 **「开启主控模式（Hub 多机管理中枢）」** 并保存（普通单机和被控节点默认不显示多机与添加节点菜单）。开启主控模式后，主控会自动在本地缓存保留 `linux/amd64` 与 `linux/arm64` 双架构安装包（也可在后台「节点与分组」一键手动同步）。
 2. **生成接入命令（默认主控直发安装包，国内小鸡免连 GitHub）**：在主控顶部切换到 **「🌐 多机总览」** → 点击 **「+ 添加服务器节点」**，保持默认勾选 **「由本主控机直接分发安装脚本与二进制包」**（取消勾选才从 GitHub 或公共代理加速地址分发），点击生成并一键复制命令（形如）：
    ```bash
    curl -fsSL 'https://主控地址/api/v1/cluster/dist/install.sh?token=fm_专属节点密钥' -o install.sh && \
@@ -131,8 +131,8 @@ location ^~ /
 ## 手动 Docker 部署与升级
 
 官方同步发布 `linux/amd64` 与 `linux/arm64` 多架构镜像：
-- **Docker Hub**：`zhoujie218/flowmaster:2.5.0`（及 `zhoujie218/flowmaster:latest`）
-- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.5.0`（及 `ghcr.io/vbskycn/flowmaster:latest`）
+- **Docker Hub**：`zhoujie218/flowmaster:2.5.1`（及 `zhoujie218/flowmaster:latest`）
+- **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.5.1`（及 `ghcr.io/vbskycn/flowmaster:latest`）
 
 ### `docker run` 部署（默认双栈 IPv4/IPv6）
 
@@ -147,7 +147,7 @@ docker run -d \
   -e HOST=:: \
   -e PORT=10089 \
   -v /opt/flowmaster/data:/data \
-  zhoujie218/flowmaster:2.5.0
+  zhoujie218/flowmaster:2.5.1
 ```
 
 > **提示**：
@@ -162,7 +162,7 @@ docker run -d \
 docker compose up -d
 
 # 升级版本（建议升级前先在管理后台下载一份备份快照）
-docker pull zhoujie218/flowmaster:2.5.0
+docker pull zhoujie218/flowmaster:2.5.1
 docker compose up -d
 ```
 

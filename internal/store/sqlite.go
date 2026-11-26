@@ -814,7 +814,28 @@ func (s *Store) setJSONSetting(key string, val any) error {
 
 func (s *Store) GetSystemSettings() model.SystemSettings {
 	cfg := model.DefaultSystemSettings()
-	_, _ = s.getJSONSetting(keySystemSettings, &cfg)
+	hasExplicitHubMode := false
+
+	s.mu.RLock()
+	if s.db != nil {
+		var raw string
+		if err := s.db.QueryRow("SELECT value FROM kv_settings WHERE key = ?", keySystemSettings).Scan(&raw); err == nil {
+			_ = json.Unmarshal([]byte(raw), &cfg)
+			var rawMap map[string]json.RawMessage
+			if json.Unmarshal([]byte(raw), &rawMap) == nil {
+				_, hasExplicitHubMode = rawMap["hubModeEnabled"]
+			}
+		}
+		// 兼容旧版主控平滑升级：若从未显式配置过 hubModeEnabled，但库中已注册过被控节点，则自动延续开启主控模式。
+		if !hasExplicitHubMode && !cfg.HubModeEnabled {
+			var nodeCount int
+			if err := s.db.QueryRow("SELECT COUNT(1) FROM cluster_nodes").Scan(&nodeCount); err == nil && nodeCount > 0 {
+				cfg.HubModeEnabled = true
+			}
+		}
+	}
+	s.mu.RUnlock()
+
 	if cfg.DataSourceMode != model.SourceModeHybrid && cfg.DataSourceMode != model.SourceModeSQLite && cfg.DataSourceMode != model.SourceModeVnstat {
 		cfg.DataSourceMode = model.SourceModeHybrid
 	}

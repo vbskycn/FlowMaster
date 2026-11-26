@@ -37,7 +37,20 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	hubTS, _, _ := setupTestServer(t)
 	client := hubTS.Client()
 
-	// 1. 初始化 Hub 管理员密码以获取会话 Cookie
+	// 1. 初始化 Hub 管理员密码以获取会话 Cookie，并验证初始单机默认关闭主控模式
+	bootBeforeResp, err := client.Get(hubTS.URL + "/api/v1/bootstrap")
+	if err != nil || bootBeforeResp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap before failed: %v", err)
+	}
+	var bootBefore struct {
+		HubModeEnabled bool `json:"hubModeEnabled"`
+	}
+	_ = json.NewDecoder(bootBeforeResp.Body).Decode(&bootBefore)
+	bootBeforeResp.Body.Close()
+	if bootBefore.HubModeEnabled {
+		t.Fatalf("expected fresh instance hubModeEnabled=false by default")
+	}
+
 	setupBody, _ := json.Marshal(map[string]string{"password": "HubAdminPass123!"})
 	reqSetup, _ := http.NewRequest(http.MethodPost, hubTS.URL+"/api/v1/auth/setup", bytes.NewReader(setupBody))
 	reqSetup.Header.Set("Content-Type", "application/json")

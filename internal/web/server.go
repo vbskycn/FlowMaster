@@ -365,6 +365,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		"siteTitle":           settings.SiteTitle,
 		"requireLoginForView": settings.RequireLoginForView,
 		"dataSourceMode":      settings.DataSourceMode,
+		"hubModeEnabled":      settings.HubModeEnabled,
 		"authenticated":       authed,
 		"needsSetup":          needsSetup,
 		"vnstatAvailable":     vnAvail,
@@ -767,6 +768,7 @@ func (s *Server) handleAdminSaveSettings(w http.ResponseWriter, r *http.Request)
 	}
 
 	if req.System != nil {
+		prevSys := s.store.GetSystemSettings()
 		sys := *req.System
 		sys.SiteTitle = strings.TrimSpace(sys.SiteTitle)
 		if sys.SiteTitle == "" {
@@ -795,6 +797,10 @@ func (s *Server) handleAdminSaveSettings(w http.ResponseWriter, r *http.Request)
 		if err := s.store.SaveSystemSettings(sys); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "保存系统设置失败"})
 			return
+		}
+		if !prevSys.HubModeEnabled && sys.HubModeEnabled && s.updater != nil {
+			// 新开启主控模式时在后台预热多架构安装包分发缓存
+			s.updater.StartDistPrewarm()
 		}
 	}
 

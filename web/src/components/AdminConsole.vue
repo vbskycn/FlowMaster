@@ -403,8 +403,8 @@
               </div>
             </div>
 
-            <!-- 多机集群统一告警托管（配置一次即覆盖全集群所有节点） -->
-            <div class="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-3 text-xs">
+            <!-- 多机集群统一告警托管（仅在开启主控模式后显示） -->
+            <div v-if="systemForm.hubModeEnabled" class="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-3 text-xs">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div class="font-semibold text-slate-800 dark:text-slate-100">多机集群统一告警托管（免去几十台节点逐一配置）</div>
@@ -799,16 +799,31 @@
         <section v-if="activeTab === 'security'" class="space-y-6">
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3.5">
-              <h3 class="text-sm font-semibold text-slate-900 dark:text-white">站点保护与存储保留上限</h3>
+              <h3 class="text-sm font-semibold text-slate-900 dark:text-white">站点保护、主控模式与存储保留上限</h3>
 
               <div>
                 <label class="block text-xs text-slate-500 mb-1">自定义面板标题</label>
                 <input v-model.trim="systemForm.siteTitle" type="text" maxlength="48" class="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
               </div>
 
-              <div>
-                <label class="block text-xs text-slate-500 mb-1">主控公网接入地址（多机管理生成一键接入命令使用，留空自动识别当前访问域名/IP）</label>
-                <input v-model.trim="systemForm.publicHubUrl" type="url" placeholder="https://monitor.example.com 或 http://[IPv6]:10089" class="w-full px-3 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+              <!-- 主控模式显式开关：开启后才展示多机总览、添加服务器节点、分组管理与集群告警菜单 -->
+              <div class="p-3.5 rounded-xl bg-blue-50/60 dark:bg-blue-950/25 border border-blue-200/70 dark:border-blue-900/60 space-y-2.5">
+                <label class="inline-flex items-start gap-2 text-xs font-semibold text-slate-800 dark:text-slate-100 cursor-pointer">
+                  <input v-model="systemForm.hubModeEnabled" type="checkbox" class="accent-blue-600 w-4 h-4 mt-0.5 shrink-0" />
+                  <span>
+                    开启主控模式（Hub 多机管理中枢）
+                    <span class="block font-normal text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      开启后将在顶栏与后台显示「多机总览」「+ 添加服务器节点」「节点与分组」「多架构分发缓存」与「集群统一告警」菜单；普通单机与被控节点建议保持关闭。
+                    </span>
+                  </span>
+                </label>
+                <p v-if="connectedToHub" class="text-[11px] text-amber-600 dark:text-amber-400 pl-6">
+                  提示：当前实例已作为被控节点接入上级主控，通常无需再开启主控模式。
+                </p>
+                <div v-if="systemForm.hubModeEnabled" class="pl-6">
+                  <label class="block text-[11px] text-slate-500 mb-1">主控公网接入地址（生成节点一键接入命令使用，留空自动识别当前访问域名/IP）</label>
+                  <input v-model.trim="systemForm.publicHubUrl" type="url" placeholder="https://monitor.example.com 或 http://[IPv6]:10089" class="w-full px-3 py-1.5 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                </div>
               </div>
 
               <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
@@ -942,19 +957,25 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { formatBytes, formatUptime, copyTextSafe, apiRequest } from '../utils/format';
 
 defineProps({
-  version: { type: String, default: '' }
+  version: { type: String, default: '' },
+  connectedToHub: { type: Boolean, default: false }
 });
 
 const emit = defineEmits(['close', 'updated', 'logged-out']);
 
-const tabs = [
-  { key: 'overview', label: '概览与数据源' },
-  { key: 'cluster', label: '节点与分组' },
-  { key: 'interfaces', label: '网卡管理' },
-  { key: 'quota', label: '月度配额与告警' },
-  { key: 'backups', label: '备份与还原' },
-  { key: 'security', label: '安全与系统日志' }
-];
+const tabs = computed(() => {
+  const list = [{ key: 'overview', label: '概览与数据源' }];
+  if (systemForm.hubModeEnabled) {
+    list.push({ key: 'cluster', label: '节点与分组' });
+  }
+  list.push(
+    { key: 'interfaces', label: '网卡管理' },
+    { key: 'quota', label: '月度配额与告警' },
+    { key: 'backups', label: '备份与还原' },
+    { key: 'security', label: '安全与系统日志' }
+  );
+  return list;
+});
 
 const sourceModeOptions = [
   {
@@ -997,6 +1018,7 @@ const systemForm = reactive({
   dataSourceMode: 'hybrid',
   hideVirtualInterfaces: true,
   defaultInterface: '',
+  hubModeEnabled: false,
   publicHubUrl: '',
   retention5mDays: 7,
   retentionHourlyDays: 90,

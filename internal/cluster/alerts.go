@@ -180,6 +180,9 @@ func (h *Hub) StopAlertMonitor() {
 }
 
 func (h *Hub) checkClusterAlertsOnce() {
+	if !h.store.GetSystemSettings().HubModeEnabled {
+		return
+	}
 	aCfg := h.store.GetAlertConfig()
 	if !aCfg.Enabled || !aCfg.ClusterMonitorEnabled {
 		return

@@ -23,9 +23,9 @@
             </div>
           </button>
 
-          <!-- 顶栏一级视图切换：多机总览对比 <-> 单机监控详情（多机模式下访客仅展示只读总览墙，登录后开放单机下钻） -->
+          <!-- 顶栏一级视图切换：仅在后台设置开启“主控模式”后显示多机总览与节点管理入口 -->
           <div
-            v-if="(!boot.requireLoginForView || boot.authenticated) && (boot.authenticated || clusterState.nodes.length <= 1)"
+            v-if="boot.hubModeEnabled && (!boot.requireLoginForView || boot.authenticated) && (boot.authenticated || clusterState.nodes.length <= 1)"
             class="inline-flex items-center p-0.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs"
           >
             <button
@@ -116,9 +116,9 @@
         <button type="button" class="underline ml-3 cursor-pointer" @click="initDashboard">重试</button>
       </div>
 
-      <!-- ==================== 模式 A：多机总览墙与横向对比中心 ==================== -->
+      <!-- ==================== 模式 A：多机总览墙与横向对比中心（仅开启主控模式后展示） ==================== -->
       <FleetOverview
-        v-if="viewMode === 'fleet'"
+        v-if="boot.hubModeEnabled && viewMode === 'fleet'"
         :nodes="clusterState.nodes"
         :hub-version="clusterState.hubVersion || boot.version"
         :latest-version="clusterState.latestReleaseVersion"
@@ -135,7 +135,7 @@
       <template v-else>
         <!-- 多机环境下的节点快捷切换与返回总览导航条 -->
         <section
-          v-if="clusterState.nodes.length > 1 || activeNodeId !== 'local'"
+          v-if="boot.hubModeEnabled && (clusterState.nodes.length > 1 || activeNodeId !== 'local')"
           class="p-3.5 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/70 flex flex-wrap items-center justify-between gap-3"
         >
           <div class="flex flex-wrap items-center gap-2.5 text-xs">
@@ -512,6 +512,7 @@
     <AdminConsole
       v-if="showAdminConsole"
       :version="boot.version"
+      :connected-to-hub="boot.connectedToHub"
       @close="showAdminConsole = false"
       @updated="onAdminUpdated"
       @logged-out="onAdminLoggedOut"
@@ -554,6 +555,7 @@ const boot = reactive({
   siteTitle: 'FlowMaster 流量监控',
   requireLoginForView: false,
   dataSourceMode: 'hybrid',
+  hubModeEnabled: false,
   authenticated: false,
   needsSetup: false,
   vnstatAvailable: false,
@@ -667,7 +669,7 @@ const singleNodeIPv4Tooltip = computed(() => {
 function goHome() {
   showAdminConsole.value = false;
   editingRemoteNode.value = null;
-  if (clusterState.nodes.length > 1) {
+  if (boot.hubModeEnabled && clusterState.nodes.length > 1) {
     switchViewMode('fleet');
   } else {
     activeNodeId.value = 'local';
@@ -801,6 +803,12 @@ async function loadBootstrap() {
   const data = await apiRequest('/api/v1/bootstrap');
   Object.assign(boot, data, { loaded: true });
   document.title = boot.siteTitle || 'FlowMaster 流量监控';
+  if (!boot.hubModeEnabled) {
+    hasChosenInitialView.value = true;
+    viewMode.value = 'single';
+    activeNodeId.value = 'local';
+    return;
+  }
   if (!hasChosenInitialView.value) {
     hasChosenInitialView.value = true;
     // 当主控已接入多台子节点时，打开首页默认直接展示“多机总览与对比墙”
@@ -840,6 +848,9 @@ async function initDashboard() {
 }
 
 async function switchViewMode(mode) {
+  if (mode === 'fleet' && !boot.hubModeEnabled) {
+    mode = 'single';
+  }
   viewMode.value = mode;
   if (mode === 'fleet') {
     closeRealtimeStream();

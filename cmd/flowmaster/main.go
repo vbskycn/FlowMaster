@@ -116,8 +116,8 @@ func main() {
 	})
 	hub.StartAlertMonitor()
 	agent.Start()
-	if !cfg.DisableWeb && cfg.HubURL == "" {
-		// 主控/独立模式下在后台自动预缓存 amd64 + arm64 多架构安装包，方便异构被控节点直接从主控分发安装
+	if !cfg.DisableWeb && cfg.HubURL == "" && st.GetSystemSettings().HubModeEnabled {
+		// 仅在显式开启主控模式时，于后台自动预缓存 amd64 + arm64 多架构安装包，方便异构被控节点直接从主控分发安装
 		upMgr.StartDistPrewarm()
 	}
 

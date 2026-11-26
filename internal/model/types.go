@@ -93,6 +93,7 @@ type SystemSettings struct {
 	DataSourceMode        string `json:"dataSourceMode"`
 	HideVirtualInterfaces bool   `json:"hideVirtualInterfaces"`
 	DefaultInterface      string `json:"defaultInterface"`
+	HubModeEnabled        bool   `json:"hubModeEnabled"`
 	PublicHubURL          string `json:"publicHubUrl"`
 	Retention5mDays       int    `json:"retention5mDays"`
 	RetentionHourlyDays   int    `json:"retentionHourlyDays"`
@@ -109,6 +110,7 @@ func DefaultSystemSettings() SystemSettings {
 		DataSourceMode:        SourceModeHybrid,
 		HideVirtualInterfaces: true,
 		DefaultInterface:      "",
+		HubModeEnabled:        false,
 		PublicHubURL:          "",
 		Retention5mDays:       7,
 		RetentionHourlyDays:   90,
