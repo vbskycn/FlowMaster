@@ -1,11 +1,17 @@
 # FlowMaster
 
 [![Latest Release](https://img.shields.io/github/v/release/vbskycn/FlowMaster)](https://github.com/vbskycn/FlowMaster/releases/latest)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-在线演示站-10b981)](https://flowmaster.168668518.com/)
 [![Docs](https://img.shields.io/badge/Docs-FlowMaster%20官方文档-2563eb)](https://flowmaster-docs.168668518.com/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zhoujie218/flowmaster)](https://hub.docker.com/r/zhoujie218/flowmaster)
 [![License](https://img.shields.io/github/license/vbskycn/FlowMaster)](LICENSE)
 
 FlowMaster 是一个面向 Linux 服务器与多 VPS 集群的**超轻量级网络流量实时监控与统一管理中枢**。采用 **Go 静态单二进制 + 内置 SQLite + 现代化响应式 Web 界面** 构建，零 Node.js 运行时依赖，单机常驻内存仅约 **12 ~ 18 MB**，原生支持 **IPv4 / IPv6 双栈**、**自动放行宿主机防火墙**、**一主多从几十台机器集中对比查看**及**后台一键远程升级**。
+
+> **在线体验 Demo（访客脱敏预览）**：[https://flowmaster.168668518.com/](https://flowmaster.168668518.com/)  
+> **官方静态文档站**：[https://flowmaster-docs.168668518.com/](https://flowmaster-docs.168668518.com/)
+
+![FlowMaster 多机总览与横向对比界面](assets/flowmaster-fleet.jpg)
 
 ## 核心特性
 

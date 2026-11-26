@@ -13,6 +13,9 @@ hero:
       text: 快速开始 →
       link: /guide/getting-started
     - theme: alt
+      text: 在线 Demo ↗
+      link: https://flowmaster.168668518.com/
+    - theme: alt
       text: 多机集群指南
       link: /guide/cluster
     - theme: alt
@@ -50,3 +53,16 @@ sudo ./install.sh binary
 ```
 
 部署完成后访问 `http://服务器IP:10089`（支持 IPv4 与 IPv6），点击右上角 **「🔒 管理登录」** 设置管理员密码即可开始使用。
+
+## 在线演示与界面预览
+
+- **在线 Demo（访客脱敏只读预览）**：[https://flowmaster.168668518.com/](https://flowmaster.168668518.com/)
+
+### 多机总览与横向对比墙
+
+![FlowMaster 多机总览界面](/images/flowmaster-fleet.jpg)
+
+## 开源与社区
+
+- 代码仓库：[GitHub (`vbskycn/FlowMaster`)](https://github.com/vbskycn/FlowMaster)
+- 交流社区：[LINUX DO 社区](https://linux.do)（感谢 LINUX DO 社区与各位佬友的支持与建议）

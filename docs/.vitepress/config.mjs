@@ -48,6 +48,7 @@ export default defineConfig({
       { text: '多机集群', link: '/guide/cluster' },
       { text: '告警与配额', link: '/guide/alerts' },
       { text: '反代与 CDN', link: '/guide/reverse-proxy' },
+      { text: '在线 Demo', link: 'https://flowmaster.168668518.com/' },
       {
         text: '运维与参考',
         items: [

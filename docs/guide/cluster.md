@@ -2,6 +2,12 @@
 
 FlowMaster 采用同体合一架构，可将一台公网可达的机器设为主控中心（Hub），集中纳管几十上百台海内外 VPS（支持 NAT 机器与纯 IPv6 节点）。
 
+::: tip 在线预览多机总览效果
+可直接访问官方演示站体验访客脱敏模式下的多机总览与横向对比界面：[https://flowmaster.168668518.com/](https://flowmaster.168668518.com/)
+:::
+
+![FlowMaster 多机总览与对比墙](/images/flowmaster-fleet.jpg)
+
 ---
 
 ## 一、开启「主控模式」
