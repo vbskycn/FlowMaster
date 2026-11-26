@@ -1,12 +1,11 @@
 # FlowMaster
 
 [![Latest Release](https://img.shields.io/github/v/release/vbskycn/FlowMaster)](https://github.com/vbskycn/FlowMaster/releases/latest)
+[![Docs](https://img.shields.io/badge/Docs-FlowMaster%20官方文档-2563eb)](https://flowmaster-docs.168668518.com/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/zhoujie218/flowmaster)](https://hub.docker.com/r/zhoujie218/flowmaster)
 [![License](https://img.shields.io/github/license/vbskycn/FlowMaster)](LICENSE)
 
 FlowMaster 是一个面向 Linux 服务器与多 VPS 集群的**超轻量级网络流量实时监控与统一管理中枢**。采用 **Go 静态单二进制 + 内置 SQLite + 现代化响应式 Web 界面** 构建，零 Node.js 运行时依赖，单机常驻内存仅约 **12 ~ 18 MB**，原生支持 **IPv4 / IPv6 双栈**、**自动放行宿主机防火墙**、**一主多从几十台机器集中对比查看**及**后台一键远程升级**。
-
-![FlowMaster 界面](assets/FlowMaster.jpg)
 
 ## 核心特性
 
@@ -65,6 +64,7 @@ sudo ./install.sh uninstall
 
 1. **部署主控机（Hub）**：任选一台公网可达的机器（建议绑定双栈域名并反代 HTTPS，或直接使用公网 `IP:10089`），推荐执行 `sudo ./install.sh binary`（或 Docker 备选 `sudo ./install.sh docker`）完成部署，打开页面点击右上角 **「管理登录」** 设置管理员密码，进入 **「安全与系统日志」** 勾选 **「开启主控模式（Hub 多机管理中枢）」** 并保存（普通单机和被控节点默认不显示多机与添加节点菜单）。开启主控模式后，主控会自动在本地缓存保留 `linux/amd64` 与 `linux/arm64` 双架构安装包（也可在后台「节点与分组」一键手动同步）。
 2. **生成接入命令（默认主控直发安装包，国内小鸡免连 GitHub）**：在主控顶部切换到 **「🌐 多机总览」** → 点击 **「+ 添加服务器节点」**，保持默认勾选 **「由本主控机直接分发安装脚本与二进制包」**（取消勾选才从 GitHub 或公共代理加速地址分发），点击生成并一键复制命令（形如）：
+
    ```bash
    curl -fsSL 'https://主控地址/api/v1/cluster/dist/install.sh?token=fm_专属节点密钥' -o install.sh && \
    chmod +x install.sh && sudo ./install.sh join --hub 'https://主控地址' --token 'fm_专属节点密钥' --mirror-hub --name '香港-HK1'
@@ -131,6 +131,7 @@ location ^~ /
 ## 手动 Docker 部署与升级
 
 官方同步发布 `linux/amd64` 与 `linux/arm64` 多架构镜像：
+
 - **Docker Hub**：`zhoujie218/flowmaster:2.5.1`（及 `zhoujie218/flowmaster:latest`）
 - **GitHub Container Registry**：`ghcr.io/vbskycn/flowmaster:2.5.1`（及 `ghcr.io/vbskycn/flowmaster:latest`）
 
@@ -151,6 +152,7 @@ docker run -d \
 ```
 
 > **提示**：
+>
 > - 如宿主机已有系统 `vnstat` 历史数据，可附加 `-v /var/lib/vnstat:/var/lib/vnstat:ro -e VNSTAT_DB_DIR=/var/lib/vnstat`。
 > - 云厂商控制台层面的安全组（如阿里云/腾讯云安全组、甲骨文云 Security Lists）位于操作系统外部，如需直接从公网访问 `10089` 面板请同步在云后台放行 TCP `10089`（纯探针 `--no-web` 被控节点无需放行任何入站端口）。
 
@@ -172,21 +174,22 @@ docker compose up -d
 
 完整配置项见 [.env.example](.env.example)，反向代理与运维细节见 [安装、安全与运维指南](docs/operations.md)：
 
-| 变量 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `HOST` | `::` | 监听地址（默认 `::` 同时监听 IPv4 与 IPv6；可填 `127.0.0.1` 或 `::1`） |
-| `PORT` | `10089` | HTTP 监听端口 |
-| `DATA_DIR` | `./data`（容器 `/data`） | SQLite 数据库、会话密钥、日志与备份持久化目录 |
-| `HUB_URL` | 空 | 被控节点主动连接的主控地址（如 `https://hub.example.com`） |
-| `HUB_TOKEN` | 空 | 主控生成的节点专属接入密钥（`fm_...`） |
-| `NODE_NAME` | 空 | 被控节点上报展示名称（留空默认取主机名） |
-| `DISABLE_WEB` | `false` | 设为 `true` 时关闭本机 Web 端口，仅作为纯后台探针向主控上报 |
-| `TRUST_PROXY` | `false` | 位于可信 HTTPS 反向代理后方时设为 `true` |
+| 变量          | 默认值                   | 说明                                                                   |
+|:------------- |:------------------------ |:---------------------------------------------------------------------- |
+| `HOST`        | `::`                     | 监听地址（默认 `::` 同时监听 IPv4 与 IPv6；可填 `127.0.0.1` 或 `::1`） |
+| `PORT`        | `10089`                  | HTTP 监听端口                                                          |
+| `DATA_DIR`    | `./data`（容器 `/data`） | SQLite 数据库、会话密钥、日志与备份持久化目录                          |
+| `HUB_URL`     | 空                       | 被控节点主动连接的主控地址（如 `https://hub.example.com`）             |
+| `HUB_TOKEN`   | 空                       | 主控生成的节点专属接入密钥（`fm_...`）                                 |
+| `NODE_NAME`   | 空                       | 被控节点上报展示名称（留空默认取主机名）                               |
+| `DISABLE_WEB` | `false`                  | 设为 `true` 时关闭本机 Web 端口，仅作为纯后台探针向主控上报            |
+| `TRUST_PROXY` | `false`                  | 位于可信 HTTPS 反向代理后方时设为 `true`                               |
 
 ---
 
 ## 文档导航
 
+- **官方文档站（推荐）**：[https://flowmaster-docs.168668518.com/](https://flowmaster-docs.168668518.com/)
 - [系统架构说明](docs/architecture.md)
 - [HTTP API 文档（含集群、v1 与旧版兼容端点）](docs/api.md)
 - [安装、安全与运维指南](docs/operations.md)

@@ -1,88 +1,73 @@
-# FlowMaster 安装、安全与运维指南
+# 安全加固、备份还原与排错指南
 
-## 一、一键安装与更新脚本 (`install.sh`)
+## 一、数据目录结构与权限
 
-`install.sh` 统一封装了 **Docker 容器部署** 与 **静态二进制 + systemd 部署** 两种生产模式，并内置国内网络环境自动探测机制：
+默认数据目录位置：
+- **二进制（`systemd`）部署**：`/var/lib/flowmaster/`（配置位于 `/etc/flowmaster/flowmaster.env`）
+- **Docker 部署**：宿主机挂载目录 `/opt/flowmaster/data/`（容器内 `/data`）
 
-1. **国内网络自动加速原理**：
-   - 执行安装或更新时，脚本先探测当前网络归属地与 GitHub 官方直连连通性；
-   - 若识别为国内网络或直连超时，自动轮询测速内置代理池并**校验返回内容真实性**（拒绝代理返回的 HTML 报错页），下载二进制时强制比对 `SHA256SUMS` 校验和；
-   - Docker 模式下若官方源拉取超时，自动回退尝试镜像加速前缀与 GHCR 源。
-2. **常用维护子命令**：
-   - `sudo ./install.sh docker`：部署或更新 Docker 容器（更新异常自动回退旧镜像 ID）
-   - `sudo ./install.sh binary`：部署或更新二进制 `systemd` 服务（更新异常自动回退旧二进制）
-   - `sudo ./install.sh join --hub <URL> --token <TOKEN> [--name <节点名>] [--no-web] [--docker]`：一键安装并作为子节点接入主控机 Hub（默认同时保留本机 `10089` Web 页面与自动放行防火墙）
-   - `sudo ./install.sh update`：自动检测当前部署模式并平滑更新至最新版本
-   - `sudo ./install.sh status` / `sudo ./install.sh uninstall`
-3. **自动放行宿主机防火墙与 IPv6 双栈**：
-   - 默认监听 `HOST=::`（双栈同时监听 IPv4 与 IPv6 的 `10089` 端口）。
-   - 安装或接入节点（未开启 `--no-web`）时，`install.sh` 自动识别并放行 `UFW`、`Firewalld` 或 `iptables`/`ip6tables`（含甲骨文云 Ubuntu 默认 `INPUT REJECT` 规则前置插入与持久化保存）；如前置反代不需要直通端口，可通过 `FLOWMASTER_SKIP_FIREWALL=1` 跳过防火墙变更。
+目录内容一览：
 
----
-
-## 二、Docker 生产部署建议
-
-1. **网络模式**：容器需读取宿主机真实网卡流量（`/proc/net/dev`），请使用 `--network host`。若需更改监听地址或端口，可通过环境变量 `-e HOST=127.0.0.1 -e PORT=10089` 控制（例如仅监听本机回环并由宿主机 Nginx / Caddy 反代提供公网 HTTPS）。
-2. **持久化目录**：始终使用明确的宿主机目录挂载至 `/data`（如 `-v /opt/flowmaster/data:/data`），严禁使用匿名卷存储数据库。`/data` 目录结构如下：
-   - `/data/flowmaster.db`（及 `-wal`/`-shm`）：核心流量与配置 SQLite 数据库
-   - `/data/session.key`：自动生成的 `0600` 高强度随机会话签名密钥
-   - `/data/backups/`：手动备份与还原前自动留存的保护快照（`.tar.gz` + `.sha256`）
-   - `/data/logs/`：`system.log` 与 `alert.log` 独立轮转日志（单文件上限 2 MiB，最多保留 3 个轮转副本，防止磁盘写满）
-3. **混合模式挂载系统 `vnstat`（可选）**：
-   - 如宿主机已有运行中的 `vnstatd` 并积累了历史流量，可添加只读挂载 `-v /var/lib/vnstat:/var/lib/vnstat:ro` 且设置 `-e VNSTAT_DB_DIR=/var/lib/vnstat`。
-   - 容器内置了轻量 `vnstat` CLI，可在后台选择 `Hybrid 智能融合` 直接展示历史数据，或点击「从系统 vnstat 幂等导入历史数据」将其永久合并进 `/data/flowmaster.db` 后脱离 `vnstat` 独立运行。
+| 路径 | 用途说明 |
+| :--- | :--- |
+| `flowmaster.db`（及 `-wal`/`-shm`） | 核心流量统计、系统设置、配额与集群节点 SQLite 数据库 |
+| `session.key` | 自动生成的 32 字节加密随机会话签名密钥（权限 `0600`） |
+| `backups/` | 手动备份与还原前自动留存的 `pre-restore-*` 保护快照（`.tar.gz` + `.sha256`） |
+| `logs/` | `system.log` 与 `alert.log` 独立轮转日志（单文件上限 2 MiB，最多保留 3 份，防止爆盘） |
+| `dist-cache/v<ver>/` | 开启主控模式后自动保留的 `linux/amd64` 与 `linux/arm64` 分发安装包缓存（最多保留最近 3 个版本） |
+| `bin/flowmaster` | （仅二进制部署）归属 `flowmaster` 用户的托管静态可执行文件，用于网页远程原子自升级 |
 
 ---
 
-## 三、公网反向代理与 HTTPS 安全配置
+## 二、安全与隐私保护机制
 
-公网暴露建议前置 HTTPS 反向代理（如 Caddy 或 Nginx），并在 FlowMaster 中设置 `TRUST_PROXY=true`：
-
-- 设置 `TRUST_PROXY=true` 后，FlowMaster 会优先读取可信代理传递的 `CF-Connecting-IP`、`X-Forwarded-For` 或 `X-Real-IP` 进行限流与防爆破识别，并根据 `X-Forwarded-Proto: https` 自动为会话 Cookie 启用 `Secure` 属性。
-- 若启用了宝塔 Nginx 防火墙或 Cloudflare WAF Bot 质询，请将 `/api/v1/cluster/` 加入白名单（Skip），或使用双域名方案（查看域名套 CDN、直连域名填入后台「主控公网接入地址」供被控节点心跳上报与主控安装包分发）。
-- 在局域网直接通过 `http://内网IP:10089` 访问时，会话 Cookie 自动保持非 `Secure` 模式，剪贴板复制自动启用兼容回退，不影响内网运维调试。
-- 反向代理转发 `/api/v1/stream/realtime`（SSE 实时流）与 `/api/v1/cluster/agent/poll`（25s 长轮询）时，务必关闭代理缓存与缓冲。宝塔面板 / Nginx 推荐片段：
-
-```nginx
-location ^~ / {
-    proxy_pass http://127.0.0.1:10089;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_set_header Host $host;
-    set $real_client_ip $remote_addr;
-    if ($http_cf_connecting_ip != "") {
-        set $real_client_ip $http_cf_connecting_ip;
-    }
-    proxy_set_header X-Real-IP $real_client_ip;
-    proxy_set_header X-Forwarded-For $real_client_ip;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-    client_max_body_size 128m;
-}
-```
+1. **访客模式隐私脱敏**：
+   - 未登录访客访问多机总览时，服务端自动脱敏所有节点的公私网 IPv4/IPv6、MAC 地址、主机名、独立面板端口与主控接入地址；
+   - 未登录访客禁止访问远程节点详情下钻与所有管理接口，前端同步隐藏添加节点、升级、配置、删除、批量操作等按钮；
+   - 如需完全私密，可在后台「安全与系统日志」开启 **「全站密码保护」**，未登录用户无法查看任何流量数据。
+2. **主控模式显式隔离**：
+   - 普通单机与被控节点默认关闭主控模式，不展示多机总览与添加节点菜单，也不启动多架构预缓存与集群告警巡检。
+3. **凭据只写不回显 & 登录防爆破**：
+   - 企业微信 Webhook、飞书 Webhook 与签名密钥、Telegram Bot Token、通用 Webhook Secret 均只写不回显，后台仅展示脱敏掩码；
+   - 后台登录按真实客户端 IP 限流（5 分钟连续失败 5 次自动锁定 15 分钟并返回 `429`）；
+   - 会话 Cookie 依据请求协议或 `X-Forwarded-Proto: https` 动态启用 `Secure`，同时兼容局域网 HTTP 调试与公网 HTTPS 生产访问。
+4. **`/var/lib/vnstat` 只读红线**：
+   - 安装、更新、重置内置数据库或卸载 FlowMaster 时，**绝不修改或删除宿主机 `/var/lib/vnstat`**。
 
 ---
 
-## 四、备份、还原与灾难恢复
+## 三、在线快照备份与灾难恢复
 
-1. **日常备份**：登录 Web 管理后台 →「备份与还原」→「一键创建备份快照」→「下载到本地」。
-2. **故障恢复**：
-   - 在线恢复：在「备份与还原」列表中点击目标快照的「一键还原」，或上传离线保存的 `.tar.gz` 备份文件。
-   - 安全机制：恢复流程在替换数据库前会依次执行归档路径/类型检查、SHA-256 摘要校验、SQLite `PRAGMA integrity_check` 及核心表检查，随后自动生成当前现网数据的 `pre-restore-*` 保护快照，最后原子切换数据库文件；若切换后自检失败会自动回滚原数据库。
+### 日常备份
+1. 登录后台 → **「备份与还原」** → 输入可选备注 → 点击 **「+ 一键创建备份快照」**（底层采用 SQLite `VACUUM INTO` 生成在线一致性快照）；
+2. 点击快照行 **「下载」** 将 `.tar.gz` 归档保存到本地离线留存。
+
+### 一键还原与自动保护
+- 支持从 **历史快照列表一键还原** 或 **上传本地 `.tar.gz` 备份文件还原**；
+- 还原前服务端会依次校验归档路径安全（防路径穿越/软链/超大包）、SHA-256 校验和、SQLite `PRAGMA integrity_check` 及核心表结构；
+- 正式切换前自动留存一份 `pre-restore-*` 保护快照，切换后若自检异常立即自动回滚至原现网数据库。
+
+### 重置内置流量统计
+- 位于「备份与还原」底部折叠区，需显式输入确认词 `RESET`，执行前会自动创建保护快照，且仅清理内置 SQLite 数据，不影响系统 `/var/lib/vnstat`。
 
 ---
 
-## 五、常见问题排查
+## 四、常见问题排查（FAQ）
 
-### 1. 容器内只看到 `eth0` 而看不到宿主机多张网卡？
-请确认 Docker 启动命令或 `compose.yaml` 中已配置 `--network host`（`network_mode: host`）。默认桥接网络下容器拥有独立的 Network Namespace，只能看到容器自身虚拟网卡。
+### 1. 主控远程配置或升级节点提示「等待远程节点响应超时」？
+- 确认主控前置 Nginx / 宝塔反代已关闭缓存与缓冲（`proxy_buffering off;`）并设置 `proxy_read_timeout 3600s;`；
+- 确认宝塔 WAF 或 Cloudflare 质询盾已对 `/api/v1/cluster/` 放行（推荐使用双域名：面板查看套 CDN，节点上报走灰云直连域名）；
+- 确认被控节点已升级至 `v2.2.1+`（修复了早期 HTTP/2 长轮询取消竞态）。
 
-### 2. 忘记了管理员登录密码怎么办？
-管理员密码哈希存储在 SQLite 的 `kv_settings` 表（键名 `admin_password_hash`）中。若遗忘密码且已设置环境变量 `ADMIN_PASSWORD`，可在停服备份 `/data/flowmaster.db` 后清除该键值并重启服务重新初始化，或配置临时 `ADMIN_TOKEN` 通过 API 重置密码。
+### 2. 开启主控后，被控机本地 10089 面板怎么还有「添加节点」菜单？
+- 请将被控节点升级至 `v2.5.1+`。新版默认关闭普通单机与被控节点的「主控模式」，升级后被控机本地面板即自动隐藏所有主控专属菜单。
 
-### 3. 端口冲突如何修改？
-- Docker (`--network host`)：修改环境变量 `-e PORT=新端口` 并重启容器。
-- systemd 部署：编辑 `/etc/flowmaster/flowmaster.env` 中的 `PORT=`，然后执行 `sudo flowmaster-ctl restart`。
+### 3. Docker 容器内只看到 `eth0` 看不到宿主机真实网卡？
+- 请确认启动参数或 `compose.yaml` 已使用 `--network host`（`network_mode: host`）。
+
+### 4. 忘记管理员登录密码怎么办？
+- 管理员密码哈希保存在 SQLite 的 `kv_settings` 表（键名 `admin_password_hash`）。停服备份 `flowmaster.db` 后删除该键并重启服务即可重新在页面初始化密码；或临时在配置中设置 `ADMIN_TOKEN` 通过 API 重置密码。
+
+### 5. 如何修改默认 `10089` 监听端口？
+- **二进制部署**：修改 `/etc/flowmaster/flowmaster.env` 中的 `PORT=` 后执行 `sudo flowmaster-ctl restart`（并放行新端口防火墙）；
+- **Docker 部署**：修改 `-e PORT=新端口` 后重建容器。

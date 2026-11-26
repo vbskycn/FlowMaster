@@ -4,6 +4,9 @@
 /dist/
 /data/
 /web/node_modules/
+/docs/node_modules/
+/docs/.vitepress/dist/
+/docs/.vitepress/cache/
 
 # 保留最小占位目录，忽略本地前端构建产物（CI 与 Docker 构建期现场生成）
 /web/dist/*
