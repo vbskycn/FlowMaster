@@ -22,12 +22,19 @@
   - 前端构建：`cd web && npm ci && npm run build`
   - Go 静态检查与单测：`go vet ./... && go test -race ./...`
   - Shell 脚本检查：`bash -n install.sh && shellcheck --severity=warning install.sh`
+  - 文档站构建（涉及文档更新或发版时）：`cd docs && npm run build`
 - Linux 内核 `/proc/net/dev` 采集、Docker `--network host` 部署及 `vnstat` 混合模式应在真实 Debian/Linux 环境执行端到端冒烟验证。
+
+## 文档与静态文档站（Cloudflare Pages）
+
+- 项目官方静态文档站位于 `docs/` 目录（VitePress），由 Cloudflare Pages 关联本仓库 `main` 分支自动构建部署（根目录 `docs`，输出 `.vitepress/dist`），线上绑定域名 `https://flowmaster-docs.168668518.com/`。
+- **单一事实同步**：以后每次功能变更、配置调整、更新文档或发布新版本时，**必须直接同步更新 `docs/` 静态文档站中的对应内容**（如 `docs/guide/*`、`docs/api.md`、`docs/architecture.md`、`docs/operations.md`、`docs/reference/env.md` 及 `docs/reference/changelog.md`），并在提交前运行 `cd docs && npm run build` 校验无死链与构建成功，保证推送 `main` 后 Cloudflare Pages 静态站点立即自动同步更新。
+- 文档站顶栏版本号由 `docs/.vitepress/config.mjs` 自动从根目录 `VERSION` 读取，禁止在站点配置中硬编码版本号。
 
 ## 部署与安全
 
-- 优先推荐单容器多阶段 Docker 部署（`--network host` 读取宿主机真实网卡并明确挂载宿主机目录至 `/data`，禁用匿名卷）；宿主机裸机部署使用 `flowmaster.service` 与受限 `flowmaster` 系统账号。
-- `.dockerignore` 必须排除 `.md` 文档、测试与本地缓存；运行时秘密严禁打入镜像。
+- 默认推荐宿主机静态二进制 + `systemd` 部署（使用 `flowmaster.service` 与受限 `flowmaster` 系统账号，支持网页远程原子自升级与主控多架构分发）；Docker 多阶段单容器部署（`--network host` 读取宿主机真实网卡并明确挂载宿主机目录至 `/data`，禁用匿名卷）作为容器化备选方案。
+- `.dockerignore` 必须排除 `docs/`、`*.md` 文档、测试与本地缓存；运行时秘密严禁打入镜像。
 - 会话签名密钥未显式配置有效强随机值时，自动在 `DATA_DIR/session.key` 生成 `0600` 随机密钥；Cookie `Secure` 属性按 HTTPS 或可信代理 `X-Forwarded-Proto` 动态开启，兼顾内网 HTTP 与公网 HTTPS。
-- 后台告警敏感凭据（Webhook Secret、Telegram Bot Token）只写不回显（API 仅返回脱敏掩码），日志拆分为 `system` 与 `alert` 独立轮转通道并自动脱敏，默认按时间倒序（最新在顶部）展示。
-- 外部 Webhook / Telegram 告警推送禁止自动跟随重定向，默认拦截回环与私有内网地址（防 SSRF）。
+- 后台告警敏感凭据（企业微信机器人 Webhook、飞书机器人 Webhook 与签名密钥、Telegram Bot Token、通用 Webhook Secret）只写不回显（API 仅返回脱敏掩码），日志拆分为 `system` 与 `alert` 独立轮转通道并自动脱敏，默认按时间倒序（最新在顶部）展示。
+- 外部告警推送（企业微信 / 飞书 / Telegram / Webhook）禁止自动跟随重定向，默认拦截回环与私有内网地址（防 SSRF）。
