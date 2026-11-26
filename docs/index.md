@@ -50,5 +50,3 @@ sudo ./install.sh binary
 ```
 
 部署完成后访问 `http://服务器IP:10089`（支持 IPv4 与 IPv6），点击右上角 **「🔒 管理登录」** 设置管理员密码即可开始使用。
-
-![FlowMaster 界面预览](/images/flowmaster-ui.jpg)
