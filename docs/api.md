@@ -45,7 +45,7 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 | `GET` | `/api/v1/admin/overview` | 获取 Go 进程内存、协程数、SQLite 体积、运行时长及 `vnstat` 可用性 |
 | `GET` | `/api/v1/admin/settings` | 读取系统参数、月度配额规则与**脱敏后**的告警配置（绝不回显明文密钥） |
 | `PUT` | `/api/v1/admin/settings` | 更新系统设置与月度流量配额规则 |
-| `PUT` | `/api/v1/admin/alerts` | 更新 Webhook / Telegram 告警规则（密钥留空保持原值不变） |
+| `PUT` | `/api/v1/admin/alerts` | 更新企业微信机器人 / 飞书机器人 / Telegram / 通用 Webhook 告警与主控统一集群巡检规则（凭据留空保持原值不变） |
 | `POST` | `/api/v1/admin/alerts/test` | 发送一次告警连通性测试消息 |
 | `GET` | `/api/v1/admin/interfaces` | 获取包含隐藏虚拟接口在内的完整网卡列表 |
 | `PUT` | `/api/v1/admin/interfaces/{name}` | 设置指定网卡的备注别名（`alias`）与显隐状态（`visible`） |
@@ -100,3 +100,5 @@ FlowMaster 同时提供面向现代前端与自动化集成的 `/api/v1/*` 接�
 | `POST` | `/api/v1/admin/cluster/batch/quota` | 管理员 | 并发向多台在线节点批量下发月度流量包配额模板 |
 | `POST` | `/api/v1/admin/cluster/batch/restart` | 管理员 | 批量下发严格白名单平滑重启指令（需 `{"confirm": true}`） |
 | `POST` | `/api/v1/admin/cluster/batch/delete` | 管理员 | 批量移除多个节点记录（需 `{"confirm": true}`） |
+| `GET` | `/api/v1/admin/cluster/dist/status` | 管理员 | 查看主控本地保留的多架构（`amd64`/`arm64`）分发安装包缓存状态与大小 |
+| `POST` | `/api/v1/admin/cluster/dist/prewarm` | 管理员 | 手动触发主控同步并校验保留全部架构分发安装包至本地缓存 |

@@ -1,6 +1,11 @@
 package quota
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -37,5 +42,77 @@ func TestSSRFTargetValidation(t *testing.T) {
 	}
 	if _, err := validateTargetURL("https://hooks.example.com/notify", false); err != nil {
 		t.Fatalf("public HTTPS URL should pass: %v", err)
+	}
+}
+
+func TestWeComAndFeishuBotDeliveryAndMasking(t *testing.T) {
+	var wecomMsgType, wecomContent string
+	wecomErrCode := 0
+	wecomSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MsgType string `json:"msgtype"`
+			Text    struct {
+				Content string `json:"content"`
+			} `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		wecomMsgType = body.MsgType
+		wecomContent = body.Text.Content
+		_ = json.NewEncoder(w).Encode(map[string]any{"errcode": wecomErrCode, "errmsg": "mock"})
+	}))
+	defer wecomSrv.Close()
+
+	var feishuMsgType, feishuText, feishuTS, feishuSign string
+	feishuCode := 0
+	feishuSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MsgType   string `json:"msg_type"`
+			Timestamp string `json:"timestamp"`
+			Sign      string `json:"sign"`
+			Content   struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		feishuMsgType = body.MsgType
+		feishuText = body.Content.Text
+		feishuTS = body.Timestamp
+		feishuSign = body.Sign
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": feishuCode, "msg": "mock"})
+	}))
+	defer feishuSrv.Close()
+
+	client := newSafeHTTPClient(true)
+	if err := sendWeCom(context.Background(), client, wecomSrv.URL+"?key=secret-key", "FlowMaster 测试企微", true); err != nil {
+		t.Fatalf("sendWeCom should succeed: %v", err)
+	}
+	if wecomMsgType != "text" || wecomContent != "FlowMaster 测试企微" {
+		t.Fatalf("unexpected wecom payload: msgtype=%q content=%q", wecomMsgType, wecomContent)
+	}
+
+	wecomErrCode = 93000
+	if err := sendWeCom(context.Background(), client, wecomSrv.URL+"?key=secret-key", "fail case", true); err == nil {
+		t.Fatalf("sendWeCom should fail when errcode != 0")
+	}
+
+	if err := sendFeishu(context.Background(), client, feishuSrv.URL, "my-feishu-secret", "FlowMaster 测试飞书", true); err != nil {
+		t.Fatalf("sendFeishu should succeed: %v", err)
+	}
+	if feishuMsgType != "text" || feishuText != "FlowMaster 测试飞书" || feishuTS == "" || feishuSign != computeFeishuSign(feishuTS, "my-feishu-secret") {
+		t.Fatalf("unexpected feishu payload/sign: type=%q text=%q ts=%q sign=%q", feishuMsgType, feishuText, feishuTS, feishuSign)
+	}
+
+	feishuCode = 19021
+	if err := sendFeishu(context.Background(), client, feishuSrv.URL, "my-feishu-secret", "fail case", true); err == nil {
+		t.Fatalf("sendFeishu should fail when code != 0")
+	}
+
+	maskedWeCom := MaskWebhookURL("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123456")
+	if maskedWeCom != "https://qyapi.weixin.qq.com/****" || strings.Contains(maskedWeCom, "abc123456") {
+		t.Fatalf("unexpected masked wecom URL: %q", maskedWeCom)
+	}
+	maskedFeishu := MaskWebhookURL("https://open.feishu.cn/open-apis/bot/v2/hook/xyz987654")
+	if maskedFeishu != "https://open.feishu.cn/****" || strings.Contains(maskedFeishu, "xyz987654") {
+		t.Fatalf("unexpected masked feishu URL: %q", maskedFeishu)
 	}
 }

@@ -169,6 +169,9 @@ type AlertConfig struct {
 	WebhookSecret       string `json:"webhookSecret"`
 	TelegramBotToken    string `json:"telegramBotToken"`
 	TelegramChatID      string `json:"telegramChatId"`
+	WeComWebhookURL     string `json:"wecomWebhookUrl"`
+	FeishuWebhookURL    string `json:"feishuWebhookUrl"`
+	FeishuSecret        string `json:"feishuSecret"`
 	AllowPrivateNetwork bool   `json:"allowPrivateNetwork"`
 	NotifyOnWarn        bool   `json:"notifyOnWarn"`
 	NotifyOnLimit       bool   `json:"notifyOnLimit"`
@@ -191,6 +194,12 @@ type AlertConfigView struct {
 	HasTelegramBotToken   bool   `json:"hasTelegramBotToken"`
 	TelegramBotTokenMask  string `json:"telegramBotTokenMask"`
 	TelegramChatID        string `json:"telegramChatId"`
+	HasWeComWebhook       bool   `json:"hasWecomWebhook"`
+	WeComWebhookMask      string `json:"wecomWebhookMask"`
+	HasFeishuWebhook      bool   `json:"hasFeishuWebhook"`
+	FeishuWebhookMask     string `json:"feishuWebhookMask"`
+	HasFeishuSecret       bool   `json:"hasFeishuSecret"`
+	FeishuSecretMask      string `json:"feishuSecretMask"`
 	AllowPrivateNetwork   bool   `json:"allowPrivateNetwork"`
 	NotifyOnWarn          bool   `json:"notifyOnWarn"`
 	NotifyOnLimit         bool   `json:"notifyOnLimit"`

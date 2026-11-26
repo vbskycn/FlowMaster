@@ -732,6 +732,12 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		HasTelegramBotToken:   strings.TrimSpace(al.TelegramBotToken) != "",
 		TelegramBotTokenMask:  quota.MaskSecret(al.TelegramBotToken),
 		TelegramChatID:        al.TelegramChatID,
+		HasWeComWebhook:       strings.TrimSpace(al.WeComWebhookURL) != "",
+		WeComWebhookMask:      quota.MaskWebhookURL(al.WeComWebhookURL),
+		HasFeishuWebhook:      strings.TrimSpace(al.FeishuWebhookURL) != "",
+		FeishuWebhookMask:     quota.MaskWebhookURL(al.FeishuWebhookURL),
+		HasFeishuSecret:       strings.TrimSpace(al.FeishuSecret) != "",
+		FeishuSecretMask:      quota.MaskSecret(al.FeishuSecret),
 		AllowPrivateNetwork:   al.AllowPrivateNetwork,
 		NotifyOnWarn:          al.NotifyOnWarn,
 		NotifyOnLimit:         al.NotifyOnLimit,
@@ -827,6 +833,12 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 		TelegramBotToken      string `json:"telegramBotToken"`
 		ClearTelegramBotToken bool   `json:"clearTelegramBotToken"`
 		TelegramChatID        string `json:"telegramChatId"`
+		WeComWebhookURL       string `json:"wecomWebhookUrl"`
+		ClearWeComWebhook     bool   `json:"clearWecomWebhook"`
+		FeishuWebhookURL      string `json:"feishuWebhookUrl"`
+		ClearFeishuWebhook    bool   `json:"clearFeishuWebhook"`
+		FeishuSecret          string `json:"feishuSecret"`
+		ClearFeishuSecret     bool   `json:"clearFeishuSecret"`
 		AllowPrivateNetwork   bool   `json:"allowPrivateNetwork"`
 		NotifyOnWarn          bool   `json:"notifyOnWarn"`
 		NotifyOnLimit         bool   `json:"notifyOnLimit"`
@@ -866,6 +878,24 @@ func (s *Server) handleAdminSaveAlerts(w http.ResponseWriter, r *http.Request) {
 		current.TelegramBotToken = ""
 	} else if strings.TrimSpace(req.TelegramBotToken) != "" {
 		current.TelegramBotToken = strings.TrimSpace(req.TelegramBotToken)
+	}
+
+	if req.ClearWeComWebhook {
+		current.WeComWebhookURL = ""
+	} else if strings.TrimSpace(req.WeComWebhookURL) != "" {
+		current.WeComWebhookURL = strings.TrimSpace(req.WeComWebhookURL)
+	}
+
+	if req.ClearFeishuWebhook {
+		current.FeishuWebhookURL = ""
+	} else if strings.TrimSpace(req.FeishuWebhookURL) != "" {
+		current.FeishuWebhookURL = strings.TrimSpace(req.FeishuWebhookURL)
+	}
+
+	if req.ClearFeishuSecret {
+		current.FeishuSecret = ""
+	} else if strings.TrimSpace(req.FeishuSecret) != "" {
+		current.FeishuSecret = strings.TrimSpace(req.FeishuSecret)
 	}
 
 	if err := s.store.SaveAlertConfig(current); err != nil {

@@ -21,6 +21,113 @@ import (
 	flowmaster "github.com/vbskycn/flowmaster"
 )
 
+// SupportedDistArches 为主控分发缓存支持保留的目标 Linux CPU 架构列表。
+var SupportedDistArches = []string{"amd64", "arm64"}
+
+// DistArchStatus 描述主控本地对某一架构分发安装包的缓存状态。
+type DistArchStatus struct {
+	Arch      string `json:"arch"`
+	Filename  string `json:"filename"`
+	Cached    bool   `json:"cached"`
+	SizeBytes int64  `json:"sizeBytes"`
+	SHA256    string `json:"sha256,omitempty"`
+	Source    string `json:"source"` // local-self | cached | missing
+}
+
+// DistCacheStatus 返回主控本地对目标版本全部架构安装包的保留与校验状态。
+func (m *Manager) DistCacheStatus(verOrLatest string) (string, []DistArchStatus) {
+	ver, err := m.ResolveDistVersion(verOrLatest)
+	if err != nil {
+		ver = flowmaster.AppVersion()
+	}
+
+	m.distMu.Lock()
+	defer m.distMu.Unlock()
+
+	verDir := filepath.Join(m.distCacheRoot(), "v"+ver)
+	result := make([]DistArchStatus, 0, len(SupportedDistArches))
+
+	for _, arch := range SupportedDistArches {
+		fn := fmt.Sprintf("flowmaster-linux-%s.tar.gz", arch)
+		item := DistArchStatus{
+			Arch:     arch,
+			Filename: fn,
+			Source:   "missing",
+		}
+
+		// 检查同版本同架构本地合成归档
+		if ver == flowmaster.AppVersion() && runtime.GOOS == "linux" && runtime.GOARCH == arch {
+			localTar := filepath.Join(verDir, fmt.Sprintf("local-flowmaster-linux-%s.tar.gz", arch))
+			localSum := localTar + ".sha256"
+			if data, hash, ok := readVerifiedCachedFile(localTar, localSum); ok {
+				item.Cached = true
+				item.SizeBytes = int64(len(data))
+				item.SHA256 = hash
+				item.Source = "local-self"
+				result = append(result, item)
+				continue
+			}
+		}
+
+		cachedTar := filepath.Join(verDir, fn)
+		cachedSum := cachedTar + ".sha256"
+		if data, hash, ok := readVerifiedCachedFile(cachedTar, cachedSum); ok {
+			item.Cached = true
+			item.SizeBytes = int64(len(data))
+			item.SHA256 = hash
+			item.Source = "cached"
+		}
+		result = append(result, item)
+	}
+	return ver, result
+}
+
+// PrewarmDistCache 在主控本地预拉取并校验保存全部支持架构（amd64/arm64）的安装包与 SHA256SUMS，
+// 使异构被控节点（如 ARM64 主控带 AMD64 国内机器）随时可直接从主控满速拉取安装。
+func (m *Manager) PrewarmDistCache(ctx context.Context, verOrLatest string) ([]DistArchStatus, error) {
+	ver, err := m.ResolveDistVersion(verOrLatest)
+	if err != nil {
+		return nil, err
+	}
+	var errs []string
+	for _, arch := range SupportedDistArches {
+		if _, _, _, aErr := m.ResolveDistArchive(ctx, ver, arch); aErr != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", arch, aErr))
+		}
+	}
+	_, statuses := m.DistCacheStatus(ver)
+	if len(errs) > 0 {
+		return statuses, errors.New(strings.Join(errs, "; "))
+	}
+	return statuses, nil
+}
+
+// StartDistPrewarm 在主控启动后异步后台预热当前版本的全架构（amd64 + arm64）安装包缓存，
+// 不阻塞服务启动，拉取失败时仅记录提示日志。
+func (m *Manager) StartDistPrewarm() {
+	go func() {
+		time.Sleep(3 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		statuses, err := m.PrewarmDistCache(ctx, flowmaster.AppVersion())
+		if err != nil {
+			if m.log != nil {
+				m.log.Warn("主控后台预缓存多架构安装包部分未完成（待节点首次请求时会自动补齐）: %v", err)
+			}
+			return
+		}
+		var ready []string
+		for _, st := range statuses {
+			if st.Cached {
+				ready = append(ready, fmt.Sprintf("%s(%.2fMiB)", st.Arch, float64(st.SizeBytes)/(1024*1024)))
+			}
+		}
+		if m.log != nil && len(ready) > 0 {
+			m.log.Info("主控多架构安装包分发缓存已就绪 (v%s): %s", flowmaster.AppVersion(), strings.Join(ready, ", "))
+		}
+	}()
+}
+
 // ResolveDistVersion 解析主控分发目标版本号（默认优先对齐主控当前版本，避免无外网环境报错）。
 func (m *Manager) ResolveDistVersion(verOrLatest string) (string, error) {
 	trimmed := strings.TrimSpace(verOrLatest)

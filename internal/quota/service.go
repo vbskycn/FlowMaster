@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -187,8 +189,12 @@ func (s *Service) CheckAndNotify(ctx context.Context) {
 // SendTestAlert 供管理后台手动触发告警连通性验证。
 func (s *Service) SendTestAlert(ctx context.Context) error {
 	aCfg := s.store.GetAlertConfig()
-	if strings.TrimSpace(aCfg.WebhookURL) == "" && (strings.TrimSpace(aCfg.TelegramBotToken) == "" || strings.TrimSpace(aCfg.TelegramChatID) == "") {
-		return errors.New("请先配置至少一种告警通道（Webhook URL 或 Telegram Bot）并保存")
+	hasWebhook := strings.TrimSpace(aCfg.WebhookURL) != ""
+	hasTelegram := strings.TrimSpace(aCfg.TelegramBotToken) != "" && strings.TrimSpace(aCfg.TelegramChatID) != ""
+	hasWeCom := strings.TrimSpace(aCfg.WeComWebhookURL) != ""
+	hasFeishu := strings.TrimSpace(aCfg.FeishuWebhookURL) != ""
+	if !hasWebhook && !hasTelegram && !hasWeCom && !hasFeishu {
+		return errors.New("请先配置至少一种告警通道（企业微信、飞书、Telegram 或通用 Webhook）并保存")
 	}
 	status, _ := s.Evaluate(ctx, time.Now())
 	title := "✅ FlowMaster 告警通道连通性测试"
@@ -243,6 +249,26 @@ func (s *Service) dispatchAlert(ctx context.Context, cfg model.AlertConfig, even
 			errs = append(errs, "Telegram: "+err.Error())
 		} else {
 			s.log.AlertInfo("Telegram 推送成功 (%s -> Chat %s)", event, cfg.TelegramChatID)
+			sentCount++
+		}
+	}
+
+	if strings.TrimSpace(cfg.WeComWebhookURL) != "" {
+		if err := sendWeCom(ctx, client, cfg.WeComWebhookURL, text, cfg.AllowPrivateNetwork); err != nil {
+			s.log.AlertError("企业微信机器人推送失败 (%s): %v", event, err)
+			errs = append(errs, "企业微信: "+err.Error())
+		} else {
+			s.log.AlertInfo("企业微信机器人推送成功 (%s)", event)
+			sentCount++
+		}
+	}
+
+	if strings.TrimSpace(cfg.FeishuWebhookURL) != "" {
+		if err := sendFeishu(ctx, client, cfg.FeishuWebhookURL, cfg.FeishuSecret, text, cfg.AllowPrivateNetwork); err != nil {
+			s.log.AlertError("飞书机器人推送失败 (%s): %v", event, err)
+			errs = append(errs, "飞书: "+err.Error())
+		} else {
+			s.log.AlertInfo("飞书机器人推送成功 (%s)", event)
 			sentCount++
 		}
 	}
@@ -377,6 +403,114 @@ func sendTelegram(ctx context.Context, client *http.Client, botToken, chatID, te
 		return fmt.Errorf("Telegram API 状态码 %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// sendWeCom 向企业微信群机器人 Webhook 发送文本通知，并校验业务返回码 errcode。
+func sendWeCom(ctx context.Context, client *http.Client, rawURL, text string, allowPrivate bool) error {
+	if _, err := validateTargetURL(rawURL, allowPrivate); err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{
+		"msgtype": "text",
+		"text": map[string]string{
+			"content": text,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(rawURL), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "FlowMaster-Alert/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
+	}
+	var result struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if json.Unmarshal(respBody, &result) == nil && result.ErrCode != 0 {
+		return fmt.Errorf("企业微信接口返回错误 (errcode=%d: %s)", result.ErrCode, result.ErrMsg)
+	}
+	return nil
+}
+
+// sendFeishu 向飞书自定义机器人 Webhook 发送文本通知，支持可选签名校验并检查业务返回码。
+func sendFeishu(ctx context.Context, client *http.Client, rawURL, secret, text string, allowPrivate bool) error {
+	if _, err := validateTargetURL(rawURL, allowPrivate); err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"msg_type": "text",
+		"content": map[string]string{
+			"text": text,
+		},
+	}
+	if sec := strings.TrimSpace(secret); sec != "" {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		payload["timestamp"] = ts
+		payload["sign"] = computeFeishuSign(ts, sec)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(rawURL), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "FlowMaster-Alert/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
+	}
+	var result struct {
+		Code       int    `json:"code"`
+		StatusCode int    `json:"StatusCode"`
+		Msg        string `json:"msg"`
+	}
+	if json.Unmarshal(respBody, &result) == nil && (result.Code != 0 || result.StatusCode != 0) {
+		code := result.Code
+		if code == 0 {
+			code = result.StatusCode
+		}
+		return fmt.Errorf("飞书接口返回错误 (code=%d: %s)", code, result.Msg)
+	}
+	return nil
+}
+
+// computeFeishuSign 按飞书自定义机器人安全校验规范生成签名：HMAC-SHA256(key=timestamp+"\n"+secret, msg="") 再 Base64。
+func computeFeishuSign(timestamp, secret string) string {
+	mac := hmac.New(sha256.New, []byte(timestamp+"\n"+secret))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// MaskWebhookURL 对包含密钥参数的机器人 Webhook URL 生成脱敏展示掩码（仅保留协议与主机名，隐去路径与查询密钥）。
+func MaskWebhookURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return MaskSecret(trimmed)
+	}
+	return fmt.Sprintf("%s://%s/****", u.Scheme, u.Host)
 }
 
 // MaskSecret 生成脱敏掩码供后台回显（只指示已配置，绝不泄露真实明文）。

@@ -302,7 +302,7 @@
             <div class="flex items-center justify-between">
               <div>
                 <h3 class="text-sm font-semibold text-slate-900 dark:text-white">超额告警外部推送（密钥脱敏只写不回显）</h3>
-                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">支持通用 JSON Webhook（兼容企业微信/飞书/钉钉/自建回调）与 Telegram Bot，自动启用 SSRF 安全校验。</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">支持企业微信机器人、飞书自定义机器人（国内机器首选）、Telegram Bot 与通用 JSON Webhook，自动启用 SSRF 安全校验。</p>
               </div>
               <label class="inline-flex items-center gap-2 text-sm font-medium cursor-pointer">
                 <input v-model="alertForm.enabled" type="checkbox" class="accent-blue-600 w-4 h-4" />
@@ -326,23 +326,47 @@
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label class="block text-xs text-slate-500 mb-1">Webhook URL</label>
-                <input v-model.trim="alertForm.webhookUrl" type="url" placeholder="https://example.com/webhook" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
-              </div>
-              <div>
+              <!-- 国内首选：企业微信机器人 -->
+              <div class="md:col-span-2">
                 <label class="block text-xs text-slate-500 mb-1">
-                  Webhook HMAC 签名密钥
-                  <span v-if="alertMeta.hasWebhookSecret" class="text-emerald-600 dark:text-emerald-400 font-num ml-1">(已存: {{ alertMeta.webhookSecretMask }})</span>
+                  企业微信群机器人 Webhook URL <span class="text-[11px] text-emerald-600 dark:text-emerald-400">（国内直连推荐）</span>
+                  <span v-if="alertMeta.hasWecomWebhook" class="text-emerald-600 dark:text-emerald-400 font-num ml-1">(已存: {{ alertMeta.wecomWebhookMask }})</span>
                 </label>
                 <div class="flex items-center gap-2">
-                  <input v-model="alertForm.webhookSecret" type="password" :placeholder="alertMeta.hasWebhookSecret ? '留空保持原密钥不变' : '可选签名密钥'" class="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
-                  <label v-if="alertMeta.hasWebhookSecret" class="inline-flex items-center gap-1 text-xs text-red-600 whitespace-nowrap cursor-pointer">
-                    <input v-model="alertForm.clearWebhookSecret" type="checkbox" /> 清空
+                  <input v-model="alertForm.wecomWebhookUrl" type="password" :placeholder="alertMeta.hasWecomWebhook ? '留空保持原机器人地址不变' : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'" class="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                  <label v-if="alertMeta.hasWecomWebhook" class="inline-flex items-center gap-1 text-xs text-red-600 whitespace-nowrap cursor-pointer">
+                    <input v-model="alertForm.clearWecomWebhook" type="checkbox" /> 清空
                   </label>
                 </div>
               </div>
 
+              <!-- 国内首选：飞书自定义机器人 -->
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">
+                  飞书自定义机器人 Webhook URL <span class="text-[11px] text-emerald-600 dark:text-emerald-400">（国内直连推荐）</span>
+                  <span v-if="alertMeta.hasFeishuWebhook" class="text-emerald-600 dark:text-emerald-400 font-num ml-1">(已存: {{ alertMeta.feishuWebhookMask }})</span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <input v-model="alertForm.feishuWebhookUrl" type="password" :placeholder="alertMeta.hasFeishuWebhook ? '留空保持原飞书地址不变' : 'https://open.feishu.cn/open-apis/bot/v2/hook/...'" class="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                  <label v-if="alertMeta.hasFeishuWebhook" class="inline-flex items-center gap-1 text-xs text-red-600 whitespace-nowrap cursor-pointer">
+                    <input v-model="alertForm.clearFeishuWebhook" type="checkbox" /> 清空
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">
+                  飞书机器人签名校验密钥（可选）
+                  <span v-if="alertMeta.hasFeishuSecret" class="text-emerald-600 dark:text-emerald-400 font-num ml-1">(已存: {{ alertMeta.feishuSecretMask }})</span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <input v-model="alertForm.feishuSecret" type="password" :placeholder="alertMeta.hasFeishuSecret ? '留空保持原签名密钥不变' : '如飞书机器人开启了签名校验请填入'" class="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                  <label v-if="alertMeta.hasFeishuSecret" class="inline-flex items-center gap-1 text-xs text-red-600 whitespace-nowrap cursor-pointer">
+                    <input v-model="alertForm.clearFeishuSecret" type="checkbox" /> 清空
+                  </label>
+                </div>
+              </div>
+
+              <!-- Telegram Bot -->
               <div>
                 <label class="block text-xs text-slate-500 mb-1">
                   Telegram Bot Token
@@ -358,6 +382,24 @@
               <div>
                 <label class="block text-xs text-slate-500 mb-1">Telegram Chat ID</label>
                 <input v-model.trim="alertForm.telegramChatId" type="text" placeholder="例如 -100123456789" class="w-full px-3 py-2 text-xs font-num rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+              </div>
+
+              <!-- 通用自定义 Webhook -->
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">通用自定义 Webhook URL</label>
+                <input v-model.trim="alertForm.webhookUrl" type="url" placeholder="https://example.com/webhook" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+              </div>
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">
+                  通用 Webhook HMAC 签名密钥
+                  <span v-if="alertMeta.hasWebhookSecret" class="text-emerald-600 dark:text-emerald-400 font-num ml-1">(已存: {{ alertMeta.webhookSecretMask }})</span>
+                </label>
+                <div class="flex items-center gap-2">
+                  <input v-model="alertForm.webhookSecret" type="password" :placeholder="alertMeta.hasWebhookSecret ? '留空保持原密钥不变' : '可选签名密钥'" class="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950" />
+                  <label v-if="alertMeta.hasWebhookSecret" class="inline-flex items-center gap-1 text-xs text-red-600 whitespace-nowrap cursor-pointer">
+                    <input v-model="alertForm.clearWebhookSecret" type="checkbox" /> 清空
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -597,8 +639,41 @@
           </details>
         </section>
 
-        <!-- Tab 4.5: 节点与分组管理（分组改名/删除 + 清理重复或未安装节点） -->
+        <!-- Tab 4.5: 节点与分组管理（分组改名/删除 + 清理重复或未安装节点 + 主控多架构分发包缓存） -->
         <section v-if="activeTab === 'cluster'" class="space-y-6">
+          <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 class="text-sm font-semibold text-slate-900 dark:text-white">主控多架构安装包分发缓存（v{{ distCacheVersion || '—' }}）</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">主控自动在本地保留 <code class="font-num">linux/amd64</code> 与 <code class="font-num">linux/arm64</code> 静态二进制安装包，方便不同架构的国内节点直接从主控满速安装与升级。</p>
+              </div>
+              <button
+                type="button"
+                class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer"
+                :disabled="distPrewarming"
+                @click="prewarmDistCacheNow"
+              >
+                {{ distPrewarming ? '正在同步全架构包…' : '同步全架构安装包' }}
+              </button>
+            </div>
+            <div class="flex flex-wrap gap-3 text-xs">
+              <div
+                v-for="item in distCacheItems"
+                :key="item.arch"
+                class="px-3 py-2 rounded-lg border flex items-center gap-2.5"
+                :class="item.cached
+                  ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/30'
+                  : 'border-amber-200 bg-amber-50/60 dark:border-amber-900/60 dark:bg-amber-950/30'"
+              >
+                <span class="w-2 h-2 rounded-full" :class="item.cached ? 'bg-emerald-500' : 'bg-amber-500'" />
+                <span class="font-num font-semibold text-slate-800 dark:text-slate-100">linux/{{ item.arch }}</span>
+                <span class="text-[11px] text-slate-500 dark:text-slate-400">
+                  {{ item.cached ? `已就绪 · ${(item.sizeBytes / 1024 / 1024).toFixed(2)} MiB` : '未缓存（点击右侧同步）' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div class="p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3.5">
             <div class="flex items-center justify-between gap-2">
               <div>
@@ -951,7 +1026,13 @@ const alertMeta = reactive({
   hasWebhookSecret: false,
   webhookSecretMask: '',
   hasTelegramBotToken: false,
-  telegramBotTokenMask: ''
+  telegramBotTokenMask: '',
+  hasWecomWebhook: false,
+  wecomWebhookMask: '',
+  hasFeishuWebhook: false,
+  feishuWebhookMask: '',
+  hasFeishuSecret: false,
+  feishuSecretMask: ''
 });
 
 const alertForm = reactive({
@@ -962,6 +1043,12 @@ const alertForm = reactive({
   telegramBotToken: '',
   clearTelegramBotToken: false,
   telegramChatId: '',
+  wecomWebhookUrl: '',
+  clearWecomWebhook: false,
+  feishuWebhookUrl: '',
+  clearFeishuWebhook: false,
+  feishuSecret: '',
+  clearFeishuSecret: false,
   allowPrivateNetwork: false,
   notifyOnWarn: true,
   notifyOnLimit: true,
@@ -976,6 +1063,9 @@ const alertForm = reactive({
 const adminInterfaces = ref([]);
 const clusterNodes = ref([]);
 const clusterGroups = ref([]);
+const distCacheVersion = ref('');
+const distCacheItems = ref([]);
+const distPrewarming = ref(false);
 const backups = ref([]);
 const backupNote = ref('');
 const backupBusy = ref(false);
@@ -1026,6 +1116,12 @@ async function loadSettings() {
     alertForm.telegramBotToken = '';
     alertForm.clearTelegramBotToken = false;
     alertForm.telegramChatId = data.alerts.telegramChatId || '';
+    alertForm.wecomWebhookUrl = '';
+    alertForm.clearWecomWebhook = false;
+    alertForm.feishuWebhookUrl = '';
+    alertForm.clearFeishuWebhook = false;
+    alertForm.feishuSecret = '';
+    alertForm.clearFeishuSecret = false;
     alertForm.allowPrivateNetwork = data.alerts.allowPrivateNetwork;
     alertForm.notifyOnWarn = data.alerts.notifyOnWarn;
     alertForm.notifyOnLimit = data.alerts.notifyOnLimit;
@@ -1039,6 +1135,12 @@ async function loadSettings() {
     alertMeta.webhookSecretMask = data.alerts.webhookSecretMask || '';
     alertMeta.hasTelegramBotToken = data.alerts.hasTelegramBotToken;
     alertMeta.telegramBotTokenMask = data.alerts.telegramBotTokenMask || '';
+    alertMeta.hasWecomWebhook = data.alerts.hasWecomWebhook;
+    alertMeta.wecomWebhookMask = data.alerts.wecomWebhookMask || '';
+    alertMeta.hasFeishuWebhook = data.alerts.hasFeishuWebhook;
+    alertMeta.feishuWebhookMask = data.alerts.feishuWebhookMask || '';
+    alertMeta.hasFeishuSecret = data.alerts.hasFeishuSecret;
+    alertMeta.feishuSecretMask = data.alerts.feishuSecretMask || '';
   }
 }
 
@@ -1067,8 +1169,36 @@ async function loadLogs() {
   logs.value = data.entries || [];
 }
 
+async function loadDistCacheStatus() {
+  try {
+    const data = await apiRequest('/api/v1/admin/cluster/dist/status');
+    distCacheVersion.value = data.version || '';
+    distCacheItems.value = data.items || [];
+  } catch {
+    // 忽略状态读取错误
+  }
+}
+
+async function prewarmDistCacheNow() {
+  distPrewarming.value = true;
+  try {
+    const res = await apiRequest('/api/v1/admin/cluster/dist/prewarm', { method: 'POST', body: {} });
+    distCacheVersion.value = res.version || distCacheVersion.value;
+    distCacheItems.value = res.items || distCacheItems.value;
+    showNotice(res.message || '多架构安装包已缓存就绪');
+  } catch (err) {
+    await loadDistCacheStatus();
+    showNotice(err.message, 'error');
+  } finally {
+    distPrewarming.value = false;
+  }
+}
+
 async function loadClusterAdminNodes() {
-  const data = await apiRequest('/api/v1/cluster/nodes');
+  const [data] = await Promise.all([
+    apiRequest('/api/v1/cluster/nodes'),
+    loadDistCacheStatus()
+  ]);
   const remotes = (data.nodes || []).filter(n => !n.isLocal);
   clusterNodes.value = remotes.map(n => ({
     ...n,

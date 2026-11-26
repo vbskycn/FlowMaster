@@ -110,6 +110,24 @@ func TestClusterHubAndAgentEndToEndDrillDownAndRemoteQuota(t *testing.T) {
 	}
 	respDistVer.Body.Close()
 
+	// 验证管理员查询主控多架构分发缓存状态返回 amd64 + arm64 列表
+	reqDistStatus, _ := http.NewRequest(http.MethodGet, hubTS.URL+"/api/v1/admin/cluster/dist/status", nil)
+	reqDistStatus.AddCookie(adminCookie)
+	respDistStatus, err := client.Do(reqDistStatus)
+	if err != nil || respDistStatus.StatusCode != http.StatusOK {
+		t.Fatalf("admin dist status failed: status=%d err=%v", respDistStatus.StatusCode, err)
+	}
+	var distStatus struct {
+		Items []struct {
+			Arch string `json:"arch"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(respDistStatus.Body).Decode(&distStatus)
+	respDistStatus.Body.Close()
+	if len(distStatus.Items) < 2 {
+		t.Fatalf("expected at least 2 dist architectures (amd64/arm64), got %+v", distStatus.Items)
+	}
+
 	// 2c. 验证 TRUST_PROXY=true 时优先提取 CF-Connecting-IP，且本机回环反代下即使 TRUST_PROXY=false 也能准确提取节点真实出口 IP
 	cfReq, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
 	cfReq.RemoteAddr = "127.0.0.1:45678"

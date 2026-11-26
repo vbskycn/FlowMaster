@@ -1007,8 +1007,12 @@ deploy_or_update_binary() {
         print_access_urls "$port"
     fi
 
-    log "✅ FlowMaster v${actual_bin_ver} (systemd 二进制模式，支持主控网页一键远程升级) 部署完成！"
-    [[ -n "$JOIN_HUB_URL" ]] && log "已连接上报主控中心: ${JOIN_HUB_URL}"
+    log "✅ FlowMaster v${actual_bin_ver} (systemd 二进制模式，默认推荐，支持主控网页一键远程升级) 部署完成！"
+    if [[ -n "$JOIN_HUB_URL" ]]; then
+        log "已连接上报主控中心: ${JOIN_HUB_URL}"
+    else
+        log "主控分发缓存: 启动后将自动在 ${BIN_DATA_DIR}/dist-cache/ 保留 linux/amd64 与 linux/arm64 双架构安装包，方便异构节点直连主控安装"
+    fi
     log "配置文件: ${ENV_FILE} | 数据目录: ${BIN_DATA_DIR}"
 }
 
@@ -1090,11 +1094,13 @@ do_smart_update() {
             deploy_or_update_binary
             ;;
         *)
-            warn "未检测到已安装的 FlowMaster 实例，默认为您执行推荐部署..."
-            if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+            warn "未检测到已安装的 FlowMaster 实例，默认为您执行推荐的静态二进制 (systemd) 部署..."
+            if command -v systemctl >/dev/null 2>&1; then
+                deploy_or_update_binary
+            elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
                 deploy_or_update_docker
             else
-                deploy_or_update_binary
+                fail "当前环境既无 systemd 也无可用 Docker，无法自动部署"
             fi
             ;;
     esac
@@ -1125,6 +1131,25 @@ show_status() {
 }
 
 do_uninstall() {
+    local auto_yes=0
+    if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
+        auto_yes=1
+    fi
+
+    if (( auto_yes == 0 )) && [[ -t 0 ]]; then
+        echo "---------------------------------------------------------"
+        echo "  即将卸载 FlowMaster 程序与系统服务（完整保留历史数据）"
+        echo "  将移除：systemd 服务 (${SERVICE_NAME})、二进制程序、快捷命令及同名容器"
+        echo "  将保留：${BIN_DATA_DIR}、${CONFIG_DIR}、${DOCKER_DATA_DIR} 与 /var/lib/vnstat"
+        echo "---------------------------------------------------------"
+        local confirm=""
+        read -r -p "确认卸载 FlowMaster（保留全部历史流量与配置数据）？[y/N]: " confirm
+        if [[ "${confirm,,}" != "y" && "${confirm,,}" != "yes" ]]; then
+            info "已取消卸载操作。"
+            return 0
+        fi
+    fi
+
     if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"; then
         info "正在停止并移除 Docker 容器 ${CONTAINER_NAME}..."
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -1136,8 +1161,8 @@ do_uninstall() {
         rm -f -- "$SERVICE_FILE" "$BIN_LINK" "$CTL_PATH" "$MANAGED_BIN_PATH"
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
-    log "✅ FlowMaster 运行实例已卸载。"
-    log "数据安全保护：持久化数据目录 (${DOCKER_DATA_DIR}、${BIN_DATA_DIR}) 与系统 /var/lib/vnstat 均完整保留未删除。"
+    log "✅ FlowMaster 运行实例已卸载（数据已完整保留）。"
+    log "数据安全保护：持久化数据目录 (${BIN_DATA_DIR}、${DOCKER_DATA_DIR})、配置目录 (${CONFIG_DIR}) 与系统 /var/lib/vnstat 均完整保留未删除，后续重装可直接继承历史数据。"
 }
 
 show_menu() {
@@ -1152,18 +1177,18 @@ show_menu() {
     fi
     echo "  当前检测: ${existing_mode}"
     echo "========================================================="
-    echo "  1) Docker 部署 / 更新至最新版（适合单机或主控中枢）"
-    echo "  2) 二进制部署 / 更新至最新版（systemd 守护，支持远程自升级）"
+    echo "  1) 二进制部署 / 更新至最新版（默认推荐，systemd 守护，支持远程自升级与多架构主控分发）"
+    echo "  2) Docker 部署 / 更新至最新版（容器化备选方案）"
     echo "  3) 作为被控节点接入主控中心（同时开启本机 10089 面板并放行防火墙）"
     echo "  4) 智能一键更新已安装的实例"
     echo "  5) 查看运行状态与当前版本"
-    echo "  6) 卸载 FlowMaster（保留历史流量数据库）"
+    echo "  6) 卸载 FlowMaster（仅移除程序与服务，完整保留历史数据）"
     echo "  0) 退出"
     echo "========================================================="
     read -r -p "请输入数字选择操作 [1]: " choice
     case "${choice:-1}" in
-        1) deploy_or_update_docker ;;
-        2) deploy_or_update_binary ;;
+        1) deploy_or_update_binary ;;
+        2) deploy_or_update_docker ;;
         3) interactive_join_prompt ;;
         4) do_smart_update ;;
         5) show_status ;;
@@ -1180,17 +1205,17 @@ main() {
 用法: sudo ./install.sh [命令] [选项]
 
 可用命令:
-  (无参数)    启动交互式部署与维护菜单
-  docker      使用 Docker 部署或平滑更新至最新版本（自动放行防火墙端口）
-  binary      使用静态二进制 + systemd 部署或平滑更新至最新版本（自动放行防火墙端口）
-    join        作为被控节点一键安装并接入主控中心:
-                sudo ./install.sh join --hub 'https://主控地址' --token 'fm_...' [--mirror-hub] [--name '节点名'] [--no-web]
-    update      自动识别当前部署方式（Docker 或二进制）并更新至最新版本
-    status      查看当前安装模式、版本号与运行状态
-    uninstall   卸载容器或二进制服务（保留全部流量数据与 /var/lib/vnstat）
+  (无参数)    启动交互式部署与维护菜单（默认推荐选项 1：静态二进制部署）
+  binary      使用静态二进制 + systemd 部署或平滑更新至最新版本（默认推荐，自动放行防火墙端口）
+  docker      使用 Docker 部署或平滑更新至最新版本（容器化备选，自动放行防火墙端口）
+  join        作为被控节点一键安装并接入主控中心:
+              sudo ./install.sh join --hub 'https://主控地址' --token 'fm_...' [--mirror-hub] [--name '节点名'] [--no-web]
+  update      自动识别当前部署方式（二进制或 Docker）并更新至最新版本
+  status      查看当前安装模式、版本号与运行状态
+  uninstall   卸载程序与服务（完整保留全部流量数据库、配置与 /var/lib/vnstat，支持 -y 跳过确认）
 
 可选环境变量:
-    FLOWMASTER_VERSION=v2.2.0           指定安装固定版本（默认 latest）
+    FLOWMASTER_VERSION=v2.5.0           指定安装固定版本（默认 latest）
     FLOWMASTER_PORT=10089               指定监听端口（默认 10089，IPv4/IPv6 双栈）
     FLOWMASTER_MIRROR_HUB=1             join 时优先从主控机直接拉取安装包（免连 GitHub）
     FLOWMASTER_SKIP_FIREWALL=1          跳过自动放行系统防火墙端口
@@ -1221,12 +1246,12 @@ EOF
 
     case "$action" in
         "") show_menu ;;
-        docker|--docker) deploy_or_update_docker ;;
         binary|install|--binary|--install) deploy_or_update_binary ;;
+        docker|--docker) deploy_or_update_docker ;;
         join|--join) parse_and_run_join "$@" ;;
         update|upgrade|--update) do_smart_update ;;
         status|--status) show_status ;;
-        uninstall|--uninstall) do_uninstall ;;
+        uninstall|--uninstall) do_uninstall "${2:-}" ;;
         *) fail "未知命令: ${action}（执行 ./install.sh --help 查看帮助）" ;;
     esac
 }

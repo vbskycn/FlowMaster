@@ -35,6 +35,7 @@ type Entry struct {
 
 var (
 	telegramTokenRegex = regexp.MustCompile(`bot\d{5,}:[A-Za-z0-9_-]{20,}`)
+	feishuHookRegex    = regexp.MustCompile(`(/open-apis/bot/v2/hook/)[A-Za-z0-9_-]{8,}`)
 	bearerTokenRegex   = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	querySecretRegex   = regexp.MustCompile(`(?i)([?&](?:token|secret|key|password|sign|sig)=)[^&\s]+`)
 )
@@ -42,6 +43,7 @@ var (
 // Redact 对进入日志的消息执行敏感凭据脱敏。
 func Redact(message string) string {
 	out := telegramTokenRegex.ReplaceAllString(message, "bot***:***")
+	out = feishuHookRegex.ReplaceAllString(out, "${1}***")
 	out = bearerTokenRegex.ReplaceAllString(out, "${1}***")
 	out = querySecretRegex.ReplaceAllString(out, "${1}***")
 	return out

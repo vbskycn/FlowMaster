@@ -54,6 +54,8 @@ func (s *Server) registerClusterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/cluster/batch/restart", s.requireAdmin(s.handleAdminBatchRestartNodes))
 	mux.HandleFunc("GET /api/v1/admin/cluster/nodes/{id}/logs", s.requireAdmin(s.handleAdminRemoteNodeLogs))
 	mux.HandleFunc("POST /api/v1/admin/cluster/nodes/{id}/backup/download", s.requireAdmin(s.handleAdminRemoteNodeBackupDownload))
+	mux.HandleFunc("GET /api/v1/admin/cluster/dist/status", s.requireAdmin(s.handleAdminClusterDistStatus))
+	mux.HandleFunc("POST /api/v1/admin/cluster/dist/prewarm", s.requireAdmin(s.handleAdminClusterDistPrewarm))
 }
 
 func (s *Server) requireAgentAuth(w http.ResponseWriter, r *http.Request) (model.ClusterNodeRecord, bool) {
@@ -806,4 +808,38 @@ func (s *Server) handleAdminRemoteNodeBackupDownload(w http.ResponseWriter, r *h
 	w.Header().Set("Content-Length", strconv.Itoa(len(archiveBytes)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(archiveBytes)
+}
+
+func (s *Server) handleAdminClusterDistStatus(w http.ResponseWriter, r *http.Request) {
+	ver, items := s.updater.DistCacheStatus(strings.TrimSpace(r.URL.Query().Get("version")))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version": ver,
+		"items":   items,
+	})
+}
+
+func (s *Server) handleAdminClusterDistPrewarm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version string `json:"version"`
+	}
+	_ = readJSONBody(r, &req, 4*1024)
+	items, err := s.updater.PrewarmDistCache(r.Context(), req.Version)
+	ver, _ := s.updater.ResolveDistVersion(req.Version)
+	if ver == "" {
+		ver = flowmaster.AppVersion()
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":   "部分架构安装包同步失败: " + err.Error(),
+			"version": ver,
+			"items":   items,
+		})
+		return
+	}
+	s.log.Info("管理员已手动同步主控多架构安装包分发缓存 (v%s)", ver)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": fmt.Sprintf("v%s 全架构安装包（amd64 + arm64）已缓存就绪", ver),
+		"version": ver,
+		"items":   items,
+	})
 }

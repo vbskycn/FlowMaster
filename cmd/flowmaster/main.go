@@ -116,6 +116,10 @@ func main() {
 	})
 	hub.StartAlertMonitor()
 	agent.Start()
+	if !cfg.DisableWeb && cfg.HubURL == "" {
+		// 主控/独立模式下在后台自动预缓存 amd64 + arm64 多架构安装包，方便异构被控节点直接从主控分发安装
+		upMgr.StartDistPrewarm()
+	}
 
 	errCh := make(chan error, 1)
 	var httpServer *http.Server
